@@ -145,6 +145,10 @@ class RuntimeSession:
                 "running": self._run_event.is_set(),
                 "states_dir": str(self.states_dir),
                 "trace_log_path": str(self.trace_log_path),
+                "runtime_memory": {
+                    "visited_maps": len(self._progress_memory.get("visited_maps", {})),
+                    "recent_targets": len(self._progress_memory.get("recent_targets", [])),
+                },
             }
 
     def tick(self, frames: int = 1) -> dict:
@@ -1170,8 +1174,7 @@ class RuntimeSession:
         with self._lock:
             with path.open("rb") as handle:
                 self.pyboy.load_state(handle)
-            self._navigation_state = self._fresh_navigation_state()
-            self._progress_memory = fresh_progress_memory()
+            self._reset_runtime_memory_unlocked()
             metadata = self._load_state_metadata(path)
             snapshot = self._snapshot_unlocked(
                 suppress_derive=True,
@@ -1188,6 +1191,24 @@ class RuntimeSession:
                 "path": str(path),
                 "action": "loaded",
                 "metadata": metadata,
+            }
+            return snapshot
+
+    def reset_runtime_memory(self) -> dict:
+        with self._lock:
+            self._reset_runtime_memory_unlocked()
+            snapshot = self._snapshot_unlocked(
+                suppress_derive=True,
+                extra_events=[
+                    {
+                        "frame": self.pyboy.frame_count,
+                        "type": "runtime_memory_reset",
+                        "label": "Runtime memory reset",
+                    }
+                ],
+            )
+            snapshot["runtime_memory"] = {
+                "action": "reset",
             }
             return snapshot
 
@@ -1457,6 +1478,10 @@ class RuntimeSession:
             "consecutive_failures": 0,
             "blocked_directions": [],
         }
+
+    def _reset_runtime_memory_unlocked(self) -> None:
+        self._navigation_state = self._fresh_navigation_state()
+        self._progress_memory = fresh_progress_memory()
 
     def frame_png(self) -> bytes:
         with self._lock:

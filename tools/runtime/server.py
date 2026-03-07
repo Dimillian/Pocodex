@@ -96,6 +96,11 @@ def load_state(request: StateSlotRequest) -> dict:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
+@app.post("/reset_runtime_memory")
+def reset_runtime_memory() -> dict:
+    return get_session().reset_runtime_memory()
+
+
 @app.get("/telemetry")
 def telemetry() -> dict:
     return get_session().telemetry()
