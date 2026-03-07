@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from .game_data import DEFAULT_MOVE_CATALOG
 from .navigator import decode_player_direction
@@ -109,6 +110,17 @@ def _read_u16_be(mem, address: int) -> int:
 def _decode_ram_text(mem, address: int, length: int) -> str:
     values = [mem[address + offset] for offset in range(length)]
     return decode_text_bytes(values, DEFAULT_CHARMAP)
+
+
+DECORATION_TOKEN_RE = re.compile(r"BOLD_[A-Z]|<[0-9A-Fa-f]{2}>")
+UPPER_TOKEN_RE = re.compile(r"[A-Z][A-Z0-9'.-]{2,}")
+DEX_NUMBER_RE = re.compile(r"(?:NO\.|·\.|\.)(\d{3})", re.IGNORECASE)
+
+
+def _normalize_overlay_row(row: str) -> str:
+    cleaned = DECORATION_TOKEN_RE.sub(" ", row)
+    cleaned = clean_ui_text(cleaned)
+    return " ".join(cleaned.split())
 
 
 def _build_battle_state(
@@ -283,11 +295,56 @@ def _build_naming_state(
     }
 
 
+def _build_pokedex_state(decoded_rows: list[str]) -> dict:
+    normalized_rows = [_normalize_overlay_row(row) for row in decoded_rows]
+    height_row = next((row[row.index("HT") :] for row in normalized_rows if "HT" in row), "")
+    weight_row = next((row[row.index("WT") :] for row in normalized_rows if "WT" in row), "")
+    dex_number_row = next((row for row in normalized_rows if DEX_NUMBER_RE.search(row)), "")
+    description_lines = [
+        row
+        for row in normalized_rows[10:17]
+        if row and "HT" not in row and "WT" not in row
+    ]
+    species_name = ""
+    species_class = ""
+    for row in normalized_rows[1:6]:
+        tokens = UPPER_TOKEN_RE.findall(row)
+        if tokens:
+            species_name = tokens[-1]
+            break
+    for row in normalized_rows[2:8]:
+        tokens = [token for token in UPPER_TOKEN_RE.findall(row) if token != species_name]
+        if tokens:
+            species_class = tokens[-1]
+            break
+
+    active = bool(species_name and description_lines and (height_row or weight_row))
+    if not active:
+        return {
+            "active": False,
+            "species_name": None,
+            "species_class": None,
+            "dex_number": None,
+            "height_weight": None,
+            "description_lines": [],
+        }
+
+    return {
+        "active": True,
+        "species_name": species_name,
+        "species_class": species_class or None,
+        "dex_number": (f"No.{DEX_NUMBER_RE.search(dex_number_row).group(1)}" if dex_number_row else None),
+        "height_weight": " / ".join(part for part in (height_row, weight_row) if part) or None,
+        "description_lines": description_lines,
+    }
+
+
 def _build_interaction_state(snapshot: dict) -> dict:
     dialogue_active = snapshot["dialogue"]["active"] or snapshot["screen"]["message_box_present"]
     menu = snapshot["menu"]
     battle = snapshot["battle"]
     naming = snapshot["naming"]
+    pokedex = snapshot["pokedex"]
     dialogue_text = " ".join(snapshot["dialogue"]["visible_lines"]).strip()
 
     if naming["active"]:
@@ -298,6 +355,22 @@ def _build_interaction_state(snapshot: dict) -> dict:
                 "screen_type": naming["screen_type"],
                 "current_text": naming["current_text"],
                 "submit_pending": naming["submit_pending"],
+            },
+        }
+    if pokedex["active"]:
+        description = " ".join(pokedex["description_lines"]).strip()
+        prompt = f"Pokédex info for {pokedex['species_name']}"
+        if description:
+            prompt = f"{prompt}: {description}"
+        return {
+            "type": "pokedex_info",
+            "prompt": prompt,
+            "details": {
+                "species_name": pokedex["species_name"],
+                "species_class": pokedex["species_class"],
+                "dex_number": pokedex["dex_number"],
+                "height_weight": pokedex["height_weight"],
+                "description_lines": pokedex["description_lines"],
             },
         }
     if battle["in_battle"]:
@@ -533,8 +606,11 @@ def build_telemetry(pyboy, addresses: TelemetryAddresses) -> dict:
         menu_item=menu_item,
         max_menu_item=max_menu_item,
     )
+    pokedex_state = _build_pokedex_state(decoded_rows)
     if in_battle:
         mode = "battle"
+    elif pokedex_state["active"]:
+        mode = "pokedex"
     elif naming_state["active"]:
         mode = "naming"
     elif message_box_present and menu_state.active:
@@ -590,6 +666,7 @@ def build_telemetry(pyboy, addresses: TelemetryAddresses) -> dict:
             "player_starter": mem[addresses["wPlayerStarter"]],
             "rival_starter": mem[addresses["wRivalStarter"]],
         },
+        "pokedex": pokedex_state,
         "naming": naming_state,
         "input": {
             "input": mem[addresses["hJoyInput"]],

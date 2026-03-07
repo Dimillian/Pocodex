@@ -649,6 +649,12 @@ class RuntimeSession:
                 "name": "advance_dialogue",
                 "reason": "Visible dialogue is active, so advance it with A.",
             }
+        if interaction_type == "pokedex_info":
+            return {
+                "type": "routine",
+                "name": "advance_dialogue",
+                "reason": "A full-screen Pokédex info card is open and waits for A or B, so advance it with A.",
+            }
         if interaction_type == "binary_choice":
             return self._choose_binary_choice_action(snapshot)
         if interaction_type == "text_entry":

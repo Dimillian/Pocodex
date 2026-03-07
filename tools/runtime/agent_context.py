@@ -39,6 +39,7 @@ def build_agent_context(
                 "context": dialogue_context,
             },
             "naming": snapshot.get("naming"),
+            "pokedex": snapshot.get("pokedex"),
             "menu": {
                 "active": snapshot["menu"]["active"],
                 "visible_items": snapshot["menu"]["visible_items"],
@@ -65,6 +66,7 @@ def build_agent_context(
                 "context": dialogue_context,
             },
             "naming": snapshot.get("naming"),
+            "pokedex": snapshot.get("pokedex"),
             "menu": {
                 "active": snapshot["menu"]["active"],
                 "visible_items": snapshot["menu"]["visible_items"],
@@ -247,6 +249,7 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
     navigation = observation.get("navigation") or {}
     interaction = observation.get("interaction") or {}
     naming = observation.get("naming") or {}
+    pokedex = observation.get("pokedex") or {}
     battle = observation.get("battle") or {}
     selected_move = ((battle.get("move_menu") or {}).get("selected_move") or {}).get("name")
     objective = navigation.get("objective")
@@ -292,6 +295,7 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
         f"Menu items: {menu_line}\n"
         f"Selected menu item: {observation['menu']['selected_item_text']}\n"
         f"Naming screen: {naming.get('active', False)} type={naming.get('screen_type')} current='{naming.get('current_text')}' base='{naming.get('base_name')}'\n"
+        f"Pokedex screen: {pokedex.get('active', False)} species={pokedex.get('species_name')} class={pokedex.get('species_class')} info={' | '.join(pokedex.get('description_lines', []))}\n"
         f"Battle state: ui={battle.get('ui_state')} selected_command={battle.get('command_menu', {}).get('selected_command')} selected_move={selected_move}\n"
         "Recent events:\n"
         f"{event_lines}\n"

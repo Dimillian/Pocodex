@@ -206,6 +206,7 @@ function formatInteractionBlock(telemetry) {
   const interaction = telemetry.interaction || {};
   const details = interaction.details || {};
   const naming = telemetry.naming || {};
+  const pokedex = telemetry.pokedex || {};
   return [
     `type           ${interaction.type ?? "none"}`,
     `prompt         ${interaction.prompt ?? "none"}`,
@@ -214,6 +215,9 @@ function formatInteractionBlock(telemetry) {
     details.selected_item_text ? `selected       ${details.selected_item_text}` : null,
     naming.active ? `naming         ${naming.screen_type ?? "unknown"} '${naming.current_text ?? ""}'` : null,
     naming.active && naming.cursor_row !== null ? `cursor         row ${naming.cursor_row} col ${naming.cursor_col}` : null,
+    pokedex.active ? `species        ${pokedex.species_name ?? "unknown"}` : null,
+    pokedex.active && pokedex.species_class ? `class          ${pokedex.species_class}` : null,
+    pokedex.active && pokedex.height_weight ? `stats          ${pokedex.height_weight}` : null,
   ].filter(Boolean).join("\n");
 }
 
@@ -290,6 +294,7 @@ function formatDialogueBlock(telemetry) {
 
 function formatMenuBlock(telemetry) {
   const naming = telemetry.naming || {};
+  const pokedex = telemetry.pokedex || {};
   const lines = [
     `menu active     ${telemetry.menu.active}`,
     `selected        ${telemetry.menu.selected_item_text ?? "none"}`,
@@ -314,6 +319,18 @@ function formatMenuBlock(telemetry) {
       `base           ${naming.base_name ?? ""}`,
       `submit         ${naming.submit_pending}`,
       `cursor         row ${naming.cursor_row ?? "-"} col ${naming.cursor_col ?? "-"}`,
+    );
+  }
+  if (pokedex.active) {
+    lines.push(
+      "",
+      "pokedex",
+      `species        ${pokedex.species_name ?? "unknown"}`,
+      `class          ${pokedex.species_class ?? "unknown"}`,
+      `dex            ${pokedex.dex_number ?? "unknown"}`,
+      `stats          ${pokedex.height_weight ?? "unknown"}`,
+      "",
+      ...((pokedex.description_lines || []).length ? pokedex.description_lines : ["No description lines"]),
     );
   }
   return lines.join("\n");
