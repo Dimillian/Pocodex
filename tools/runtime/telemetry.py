@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .navigator import decode_player_direction
 from .symbols import SymbolTable
 from .tilemap import (
     DEFAULT_CHARMAP,
     MESSAGE_BOX,
+    decode_tilemap_cells,
     decode_tilemap_rows,
     extract_box_lines,
     extract_menu_state,
@@ -30,8 +32,15 @@ SYMBOL_NAMES = (
     "wBattleType",
     "wCurMap",
     "wCurMapScript",
+    "wCurMapWidth",
+    "wCurMapHeight",
     "wYCoord",
     "wXCoord",
+    "wDestinationWarpID",
+    "wWarpedFromWhichWarp",
+    "wPlayerMovingDirection",
+    "wPlayerLastStopDirection",
+    "wPlayerDirection",
     "hJoyReleased",
     "hJoyPressed",
     "hJoyHeld",
@@ -78,11 +87,13 @@ def derive_events(previous: dict | None, current: dict) -> list[dict]:
     prev_map = previous["map"]
     curr_map = current["map"]
     if prev_map["id"] != curr_map["id"]:
+        prev_name = prev_map.get("name") or f"Map {prev_map['id']}"
+        curr_name = curr_map.get("name") or f"Map {curr_map['id']}"
         events.append(
             {
                 "frame": frame,
                 "type": "map_changed",
-                "label": f"Map changed: {prev_map['id']} -> {curr_map['id']}",
+                "label": f"Map changed: {prev_name} -> {curr_name}",
             }
         )
     elif (prev_map["x"], prev_map["y"]) != (curr_map["x"], curr_map["y"]):
@@ -166,8 +177,11 @@ def build_telemetry(pyboy, addresses: TelemetryAddresses) -> dict:
         for row_start in range(0, len(tilemap), TILEMAP_WIDTH)
     ]
     decoded_rows = decode_tilemap_rows(tilemap_rows, DEFAULT_CHARMAP)
+    decoded_cells = decode_tilemap_cells(tilemap_rows, DEFAULT_CHARMAP)
 
     map_id = mem[addresses["wCurMap"]]
+    map_width = mem[addresses["wCurMapWidth"]]
+    map_height = mem[addresses["wCurMapHeight"]]
     menu_item = mem[addresses["wCurrentMenuItem"]]
     menu_poll_count = mem[addresses["wMenuJoypadPollCount"]]
     top_menu_y = mem[addresses["wTopMenuItemY"]]
@@ -186,7 +200,10 @@ def build_telemetry(pyboy, addresses: TelemetryAddresses) -> dict:
         y0=MESSAGE_BOX[1],
         x1=MESSAGE_BOX[2],
         y1=MESSAGE_BOX[3],
+        decoded_cells=decoded_cells,
     ) if message_box_present else []
+    dialogue_active = bool(dialogue_lines) or message_box_present
+    dialogue_source = "tilemap" if dialogue_lines else "box_only" if message_box_present else "none"
 
     menu_cursor_offset = menu_cursor_addr - addresses["wTileMap"]
     if 0 <= menu_cursor_offset < TILEMAP_WIDTH * TILEMAP_HEIGHT:
@@ -236,6 +253,15 @@ def build_telemetry(pyboy, addresses: TelemetryAddresses) -> dict:
             "script": mem[addresses["wCurMapScript"]],
             "x": mem[addresses["wXCoord"]],
             "y": mem[addresses["wYCoord"]],
+            "width": map_width,
+            "height": map_height,
+        },
+        "movement": {
+            "facing": decode_player_direction(mem[addresses["wPlayerDirection"]]),
+            "moving_direction": decode_player_direction(mem[addresses["wPlayerMovingDirection"]]),
+            "last_stop_direction": decode_player_direction(mem[addresses["wPlayerLastStopDirection"]]),
+            "destination_warp_id": mem[addresses["wDestinationWarpID"]],
+            "warped_from_which_warp": mem[addresses["wWarpedFromWhichWarp"]],
         },
         "menu": {
             "active": menu_state.active,
@@ -278,6 +304,7 @@ def build_telemetry(pyboy, addresses: TelemetryAddresses) -> dict:
         },
         "dialogue": {
             "visible_lines": dialogue_lines,
-            "active": bool(dialogue_lines),
+            "active": dialogue_active,
+            "source": dialogue_source,
         },
     }

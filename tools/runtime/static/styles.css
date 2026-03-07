@@ -190,6 +190,20 @@ body {
   grid-column: span 2;
 }
 
+.checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.checkbox-row input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-strong);
+}
+
 .action-grid--routines,
 .dpad-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));

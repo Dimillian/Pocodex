@@ -18,6 +18,7 @@ const decodedRowsBlockEl = document.getElementById("decoded-rows-block");
 const tilemapBlockEl = document.getElementById("tilemap-block");
 const stateSlotLabelEl = document.getElementById("state-slot-label");
 const agentStateLabelEl = document.getElementById("agent-state-label");
+const agentFreshThreadToggleEl = document.getElementById("agent-fresh-thread-toggle");
 
 const buttonMap = {
   ArrowUp: "up",
@@ -30,8 +31,12 @@ const buttonMap = {
   Shift: "select",
 };
 
+const REFRESH_INTERVAL_MS = 30;
+
 let lastFrame = null;
 let lastRefreshAt = null;
+let refreshInFlight = false;
+let refreshQueued = false;
 
 async function fetchJson(path, options) {
   const response = await fetch(path, options);
@@ -96,7 +101,11 @@ async function startAgent(mode = "codex") {
   await fetchJson("/agent/start", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ mode, step_delay_ms: 500 }),
+    body: JSON.stringify({
+      mode,
+      step_delay_ms: 100,
+      fresh_thread: mode === "codex" ? agentFreshThreadToggleEl.checked : false,
+    }),
   });
   await refresh();
 }
@@ -106,8 +115,11 @@ async function stopAgent() {
   await refresh();
 }
 
-function updateFrame() {
-  frameEl.src = `/frame?ts=${Date.now()}`;
+function updateFrame(framePngBase64) {
+  if (!framePngBase64) {
+    return;
+  }
+  frameEl.src = `data:image/png;base64,${framePngBase64}`;
 }
 
 function pretty(value) {
@@ -119,14 +131,22 @@ function formatList(items, emptyLabel = "none") {
 }
 
 async function refresh() {
-  const [health, telemetry, states, traces, agentContext, agentStatus] = await Promise.all([
+  if (refreshInFlight) {
+    refreshQueued = true;
+    return;
+  }
+  refreshInFlight = true;
+
+  try {
+  const [health, snapshot, states, traces, agentContext, agentStatus] = await Promise.all([
     fetchJson("/health"),
-    fetchJson("/telemetry"),
+    fetchJson("/snapshot"),
     fetchJson("/states"),
     fetchJson("/traces?limit=10"),
     fetchJson("/agent_context"),
     fetchJson("/agent/status"),
   ]);
+  const telemetry = snapshot.telemetry;
   const now = performance.now();
 
   statusPillEl.textContent = health.running ? "running" : "paused";
@@ -155,10 +175,17 @@ async function refresh() {
     `blank ratio    ${telemetry.screen.blank_ratio.toFixed(3)}`,
   ].join("\n");
   mapBlockEl.textContent = [
+    `name           ${telemetry.map.name ?? `Map ${telemetry.map.id}`}`,
+    `const          ${telemetry.map.const_name ?? "unknown"}`,
     `map id         ${telemetry.map.id}`,
     `script         ${telemetry.map.script}`,
     `x              ${telemetry.map.x}`,
     `y              ${telemetry.map.y}`,
+    `size           ${telemetry.map.width} x ${telemetry.map.height}`,
+    "",
+    `objective      ${telemetry.navigation?.objective?.label ?? "none"}`,
+    `last result    ${telemetry.navigation?.last_result?.kind ?? "none"}`,
+    `facing         ${telemetry.movement?.facing ?? "unknown"}`,
   ].join("\n");
   battleBlockEl.textContent = [
     `in battle      ${telemetry.battle.in_battle}`,
@@ -187,7 +214,9 @@ async function refresh() {
   ].join("\n");
   dialogueBlockEl.textContent = telemetry.dialogue.visible_lines.length
     ? telemetry.dialogue.visible_lines.join("\n")
-    : "No visible dialogue";
+    : telemetry.dialogue.active
+      ? "Dialogue box visible (text buffer not decoded for this frame)"
+      : "No visible dialogue";
   eventsBlockEl.textContent = telemetry.events.recent
     .slice(-10)
     .map((event) => `[${event.frame}] ${event.label}`)
@@ -215,6 +244,24 @@ async function refresh() {
         .join("\n")
     : "No traces yet";
   agentContextBlockEl.textContent = [
+    `objective      ${agentContext.observation.navigation?.objective?.label ?? "none"}`,
+    `last result    ${agentContext.observation.navigation?.last_result?.kind ?? "none"}`,
+    `facing         ${agentContext.observation.movement?.facing ?? "unknown"}`,
+    "",
+    "warps",
+    formatList(
+      (agentContext.observation.map.warps ?? []).map(
+        (warp) => `(${warp.x}, ${warp.y}) -> ${warp.target_name}`,
+      ),
+    ),
+    "",
+    "objects",
+    formatList(
+      (agentContext.observation.map.objects ?? []).map(
+        (object) => `${object.sprite} @ (${object.x}, ${object.y})`,
+      ),
+    ),
+    "",
     `heuristic      ${agentContext.heuristic_next_action.action}`,
     `reason         ${agentContext.heuristic_next_action.reason}`,
     "",
@@ -229,6 +276,7 @@ async function refresh() {
     `running        ${agentStatus.running}`,
     `state          ${agentStatus.state}`,
     `mode           ${agentStatus.mode ?? "none"}`,
+    `fresh thread   ${agentStatus.fresh_thread ?? false}`,
     `step count     ${agentStatus.step_count}`,
     `current        ${agentStatus.current_action ?? "idle"}`,
     `thread         ${agentStatus.thread_id ?? "none"}`,
@@ -265,7 +313,16 @@ async function refresh() {
   decodedRowsBlockEl.textContent = telemetry.screen.decoded_rows.join("\n");
   tilemapBlockEl.textContent = telemetry.screen.tilemap_rows_hex.join("\n");
 
-  updateFrame();
+  updateFrame(snapshot.frame_png_base64);
+  } finally {
+    refreshInFlight = false;
+    if (refreshQueued) {
+      refreshQueued = false;
+      queueMicrotask(() => {
+        refresh().catch((error) => console.error(error));
+      });
+    }
+  }
 }
 
 document.querySelectorAll("[data-button]").forEach((buttonEl) => {
@@ -297,6 +354,6 @@ window.addEventListener("keydown", async (event) => {
 
 setInterval(() => {
   refresh().catch((error) => console.error(error));
-}, 250);
+}, REFRESH_INTERVAL_MS);
 
 refresh().catch((error) => console.error(error));

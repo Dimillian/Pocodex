@@ -135,6 +135,7 @@ def main() -> None:
     parser.add_argument("--print-prompt", action="store_true")
     parser.add_argument("--log-path")
     parser.add_argument("--thread-state-path")
+    parser.add_argument("--resume-thread", action="store_true")
     args = parser.parse_args()
 
     client = RuntimeClient(args.base_url)
@@ -154,7 +155,11 @@ def main() -> None:
 
     try:
         with (
-            CodexAppServerClient(cwd=repo_root, thread_state_path=thread_state_path)
+            CodexAppServerClient(
+                cwd=repo_root,
+                thread_state_path=thread_state_path,
+                fresh_thread=not args.resume_thread,
+            )
             if args.mode == "codex"
             else _NullCodexClient()
         ) as codex_client:

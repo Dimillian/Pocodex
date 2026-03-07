@@ -101,6 +101,11 @@ def telemetry() -> dict:
     return get_session().telemetry()
 
 
+@app.get("/snapshot")
+def snapshot() -> dict:
+    return get_session().snapshot_bundle()
+
+
 @app.get("/agent_context")
 def agent_context() -> dict:
     return get_session().agent_context()
@@ -118,6 +123,7 @@ def agent_start(request: AgentControlStartRequest) -> dict:
             mode=request.mode,
             step_delay_ms=request.step_delay_ms,
             max_steps=request.max_steps,
+            fresh_thread=request.fresh_thread,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

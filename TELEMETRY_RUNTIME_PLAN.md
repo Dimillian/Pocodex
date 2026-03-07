@@ -286,6 +286,33 @@ Tasks:
 - [x] Add trace logging for every observation and action
 - [x] Add an external agent-runner loop against the runtime API
 - [x] Add a Codex app-server mode for the external agent runner
+- [x] Parse map metadata from the disassembly into a runtime catalog
+- [x] Expose navigation-aware telemetry:
+  - map names
+  - warp targets
+  - object positions
+  - facing and movement state
+  - last movement result / transition result
+- [x] Add a world-affordance layer:
+  - warps and doors
+  - signposts / background events
+  - NPC/object affordances
+  - early script-trigger regions parsed from map scripts
+- [x] Add a milestone/objective layer at story-beat granularity
+- [x] Add a separate overworld navigation policy outside `session.py`
+- [x] Build collision-aware pathfinding from map blocks / blocksets / collision tiles
+- [x] Add macro objective following so Codex can pick subgoals instead of every tile move
+- [x] Reduce per-turn latency by:
+  - lowering the default agent step delay
+  - letting the runtime execute several verified local movement steps per agent action
+- [x] Make UI frame + telemetry reads atomic with a shared runtime snapshot endpoint
+- [x] Validate the first overworld milestones:
+  - leave Red's bedroom
+  - go downstairs
+  - leave the house
+- [ ] Make the Pallet Town Oak trigger path fully reliable end to end
+- [ ] Decode Oak intro dialogue text from the actually visible screen state, not only `wTileMap`
+- [ ] Extend the world policy beyond the house/Pallet Town intro path
 
 Exit criteria:
 
@@ -348,7 +375,7 @@ Validation:
 
 ## Phase 6: Minimap And Derived Overlays
 
-Status: `NOT STARTED`
+Status: `IN PROGRESS`
 
 Objective:
 
@@ -357,8 +384,8 @@ minimap and derived overlays.
 
 Tasks:
 
-- [ ] Parse map metadata from the disassembly
-- [ ] Build a map lookup from `wCurMap` to named map data
+- [x] Parse map metadata from the disassembly
+- [x] Build a map lookup from `wCurMap` to named map data
 - [ ] Render a basic minimap for the current map
 - [ ] Draw player position on the minimap
 - [ ] Add optional overlays for:

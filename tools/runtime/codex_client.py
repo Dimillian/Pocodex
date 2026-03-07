@@ -20,9 +20,11 @@ class CodexAppServerClient:
         *,
         cwd: Path,
         thread_state_path: Path | None = None,
+        fresh_thread: bool = False,
     ) -> None:
         self.cwd = cwd
         self.thread_state_path = thread_state_path
+        self.fresh_thread = fresh_thread
         self.thread_id: str | None = None
         self._process: subprocess.Popen[str] | None = None
         self._pending: dict[int, queue.Queue[dict[str, Any]]] = {}
@@ -106,6 +108,17 @@ class CodexAppServerClient:
     def decide_action(self, context: dict[str, Any], *, timeout: float = 120.0) -> dict[str, Any]:
         self.start()
         allowed_ids = [action["id"] for action in context["allowed_actions"]]
+        model_input = json.dumps(
+            {
+                "objective": context["objective"],
+                "rules": context["rules"],
+                "allowed_actions": context["allowed_actions"],
+                "heuristic_next_action": context["heuristic_next_action"],
+                "model_input": context.get("model_input"),
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
         output_schema = {
             "type": "object",
             "properties": {
@@ -133,6 +146,14 @@ class CodexAppServerClient:
                     {
                         "type": "text",
                         "text": prompt,
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            "Structured context JSON follows. Use it as the source of truth, especially for "
+                            "map warps, objects, navigation objective, recent movement results, and allowed actions.\n"
+                            f"{model_input}"
+                        ),
                     }
                 ],
                 "cwd": str(self.cwd),
@@ -193,6 +214,9 @@ class CodexAppServerClient:
         )
 
     def _ensure_thread(self) -> None:
+        if self.fresh_thread:
+            self._clear_saved_thread_id()
+
         saved_thread_id = self._load_thread_id()
         if saved_thread_id:
             try:
@@ -443,6 +467,12 @@ class CodexAppServerClient:
             + "\n",
             encoding="utf-8",
         )
+
+    def _clear_saved_thread_id(self) -> None:
+        self.thread_id = None
+        if self.thread_state_path is None or not self.thread_state_path.exists():
+            return
+        self.thread_state_path.unlink()
 
     def _require_thread_id(self) -> str:
         if not self.thread_id:

@@ -25,12 +25,34 @@ def build_agent_context(
         }
         for trace in traces[-6:]
     ]
+    model_input = {
+        "objective": "Make forward progress in Pokemon Blue one verified action at a time.",
+        "observation": {
+            "mode": snapshot["mode"],
+            "map": snapshot["map"],
+            "movement": snapshot.get("movement"),
+            "navigation": snapshot.get("navigation"),
+            "dialogue": snapshot["dialogue"],
+            "menu": {
+                "active": snapshot["menu"]["active"],
+                "visible_items": snapshot["menu"]["visible_items"],
+                "selected_item_text": snapshot["menu"]["selected_item_text"],
+                "selected_index": snapshot["menu"]["selected_index"],
+            },
+            "battle": snapshot["battle"],
+            "events": recent_events,
+        },
+        "planner_state": planner_state,
+        "recent_traces": recent_traces,
+    }
 
     context = {
         "objective": "Make forward progress in Pokemon Blue one verified action at a time.",
         "observation": {
             "mode": snapshot["mode"],
             "map": snapshot["map"],
+            "movement": snapshot.get("movement"),
+            "navigation": snapshot.get("navigation"),
             "dialogue": snapshot["dialogue"],
             "menu": {
                 "active": snapshot["menu"]["active"],
@@ -53,10 +75,13 @@ def build_agent_context(
             "Choose exactly one next action from allowed_actions.",
             "Prefer advancing visible dialogue over guessing movement.",
             "When a menu is visible, navigate or confirm within that menu before moving in the field.",
+            "When navigation.objective is present, prefer actions that move toward or interact with that objective.",
+            "If movement fails twice in a row, prefer waiting briefly and re-observing before forcing another direction.",
             "Use save/load only when recovery is needed, not as a normal action.",
             "If the state is ambiguous, choose wait_short rather than inventing a risky action.",
         ],
         "recent_traces": recent_traces,
+        "model_input": model_input,
         "output_contract": {
             "format": "json",
             "schema": {
@@ -96,6 +121,7 @@ def build_allowed_actions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     if mode == "field":
         actions.extend(
             [
+                {"id": "follow_objective", "type": "macro", "name": "follow_objective", "description": "Use local navigation to follow the current story objective for several verified steps."},
                 {"id": "move_up", "type": "routine", "name": "move_up", "description": "Attempt to move one step up."},
                 {"id": "move_down", "type": "routine", "name": "move_down", "description": "Attempt to move one step down."},
                 {"id": "move_left", "type": "routine", "name": "move_left", "description": "Attempt to move one step left."},
@@ -121,6 +147,8 @@ def build_allowed_actions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
 
 def build_heuristic_hint(snapshot: dict[str, Any], planner_state: dict[str, Any]) -> dict[str, Any]:
     mode = snapshot["mode"]
+    navigation = snapshot.get("navigation") or {}
+    objective = navigation.get("objective")
     if mode == "dialogue":
         return {"action": "press_a", "reason": "Visible dialogue is active."}
     if mode == "menu_dialogue":
@@ -131,11 +159,16 @@ def build_heuristic_hint(snapshot: dict[str, Any], planner_state: dict[str, Any]
         if snapshot["menu"]["selected_item_text"]:
             return {"action": "menu_confirm", "reason": "A menu item is selected."}
         return {"action": "menu_down", "reason": "A menu is open without a selected target."}
-    if mode == "field" and snapshot["map"]["id"] == 0:
+    if mode == "field" and snapshot["map"]["id"] == 0 and snapshot["map"]["x"] == 0 and snapshot["map"]["y"] == 0:
         return {"action": "press_start", "reason": "At the title screen, opening the menu is the next deterministic step."}
     if mode == "field" and planner_state.get("oak_intro_active"):
         return {"action": "interact_a", "reason": "The intro script still appears active."}
     if mode == "field":
+        if navigation.get("consecutive_failures", 0) >= 2:
+            return {"action": "wait_short", "reason": "Recent movement attempts failed; re-observe before pushing another direction."}
+        if objective:
+            objective_label = objective.get("label", "the current objective")
+            return {"action": "follow_objective", "reason": f"Use local navigation to progress toward {objective_label}."}
         return {"action": "move_down", "reason": "Field exploration can probe one move at a time."}
     if mode == "battle":
         return {"action": "battle_confirm", "reason": "Battle flow is not specialized yet."}
@@ -152,11 +185,30 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
     ) or "- none"
     menu_line = ", ".join(observation["menu"]["visible_items"]) or "none"
     dialogue_line = " | ".join(observation["dialogue"]["visible_lines"]) or "none"
+    movement = observation.get("movement") or {}
+    navigation = observation.get("navigation") or {}
+    objective = navigation.get("objective")
+    objective_line = "none"
+    if objective:
+        objective_line = f"{objective.get('kind')}: {objective.get('label')}"
+    affordance_lines = context["model_input"]["observation"]["navigation"].get("affordances") or []
+    affordance_summary = ", ".join(
+        f"{affordance['id']}={affordance['kind']}"
+        for affordance in affordance_lines[:8]
+    ) or "none"
+    facing = movement.get("facing") or "unknown"
+    move_result = navigation.get("last_result", {}).get("kind") if navigation.get("last_result") else "none"
+    failures = navigation.get("consecutive_failures", 0)
+    map_name = observation["map"].get("name") or observation["map"].get("const_name") or f"Map {observation['map']['id']}"
 
     return (
         "You are choosing the next action for Pokemon Blue.\n"
         f"Current mode: {observation['mode']}\n"
-        f"Map: id={observation['map']['id']} x={observation['map']['x']} y={observation['map']['y']}\n"
+        f"Map: {map_name} (id={observation['map']['id']}) x={observation['map']['x']} y={observation['map']['y']}\n"
+        f"Facing: {facing}\n"
+        f"Objective: {objective_line}\n"
+        f"Affordances: {affordance_summary}\n"
+        f"Last movement result: {move_result}; consecutive failures: {failures}\n"
         f"Dialogue: {dialogue_line}\n"
         f"Menu items: {menu_line}\n"
         f"Selected menu item: {observation['menu']['selected_item_text']}\n"

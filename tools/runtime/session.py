@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, datetime
+import base64
+from heapq import heappop, heappush
 import io
 import json
 import logging
@@ -14,6 +17,9 @@ import warnings
 
 from .agent_context import build_agent_context
 from .controls import normalize_button
+from .map_data import load_map_catalog
+from .objective_manager import milestone_rank
+from .navigator import choose_field_action, enrich_snapshot_with_navigation, update_navigation_state
 from .symbols import load_symbol_table
 from .telemetry import TelemetryAddresses, build_telemetry, derive_events
 
@@ -61,6 +67,7 @@ class RuntimeSession:
             "oak_intro_active": False,
             "field_move_index": 0,
         }
+        self._navigation_state = self._fresh_navigation_state()
 
         if not self.rom_path.exists():
             raise FileNotFoundError(f"Missing ROM: {self.rom_path}")
@@ -71,6 +78,7 @@ class RuntimeSession:
 
         self.symbols = load_symbol_table(self.sym_path)
         self.telemetry_addresses = TelemetryAddresses.from_symbols(self.symbols)
+        self.map_catalog = load_map_catalog(self.repo_root)
         self.pyboy = PyBoy(
             str(self.rom_path),
             window="null",
@@ -139,13 +147,13 @@ class RuntimeSession:
                 self.pyboy.tick()
             return self._snapshot_unlocked()
 
-    def tap(self, button: str, hold_frames: int = 2, settle_frames: int = 2) -> dict:
-        return self.press(button, hold_frames=hold_frames, settle_frames=settle_frames)
+    def tap(self, button: str, hold_frames: int = 2, settle_frames: int = 2, *, record_trace: bool = True) -> dict:
+        return self.press(button, hold_frames=hold_frames, settle_frames=settle_frames, record_trace=record_trace)
 
-    def press(self, button: str, hold_frames: int = 2, settle_frames: int = 2) -> dict:
+    def press(self, button: str, hold_frames: int = 2, settle_frames: int = 2, *, record_trace: bool = True) -> dict:
         button_name = normalize_button(button)
         with self._lock:
-            before = build_telemetry(self.pyboy, self.telemetry_addresses)
+            before = self._build_snapshot_unlocked()
             self.pyboy.button_press(button_name)
             for _ in range(hold_frames):
                 self.pyboy.tick()
@@ -156,29 +164,36 @@ class RuntimeSession:
                 minimum_frames=settle_frames,
                 reason=f"press:{button_name}",
             )
-            trace = self._build_action_trace(
-                kind="press",
-                payload={
-                    "button": button_name,
-                    "hold_frames": hold_frames,
-                    "settle_frames": settle_frames,
-                },
-                before=before,
-                after=after,
+            self._update_navigation_state(before=before, after=after, payload={"button": button_name})
+            enrich_snapshot_with_navigation(
+                after,
+                map_catalog=self.map_catalog,
+                navigation_state=self._navigation_state,
             )
-            self._record_trace(trace)
-            after["action_trace"] = trace
+            if record_trace:
+                trace = self._build_action_trace(
+                    kind="press",
+                    payload={
+                        "button": button_name,
+                        "hold_frames": hold_frames,
+                        "settle_frames": settle_frames,
+                    },
+                    before=before,
+                    after=after,
+                )
+                self._record_trace(trace)
+                after["action_trace"] = trace
             return after
 
     def sequence(self, steps: list[dict]) -> dict:
         traces: list[dict] = []
         with self._lock:
-            before_sequence = build_telemetry(self.pyboy, self.telemetry_addresses)
+            before_sequence = self._build_snapshot_unlocked()
             for index, step in enumerate(steps):
                 button_name = normalize_button(step["button"])
                 hold_frames = step.get("hold_frames", 2)
                 settle_frames = step.get("settle_frames", 2)
-                before = build_telemetry(self.pyboy, self.telemetry_addresses)
+                before = self._build_snapshot_unlocked()
                 self.pyboy.button_press(button_name)
                 for _ in range(hold_frames):
                     self.pyboy.tick()
@@ -188,6 +203,12 @@ class RuntimeSession:
                     button_name=button_name,
                     minimum_frames=settle_frames,
                     reason=f"sequence_step:{index}:{button_name}",
+                )
+                self._update_navigation_state(before=before, after=after, payload={"button": button_name})
+                enrich_snapshot_with_navigation(
+                    after,
+                    map_catalog=self.map_catalog,
+                    navigation_state=self._navigation_state,
                 )
                 trace = self._build_action_trace(
                     kind="sequence_step",
@@ -226,13 +247,17 @@ class RuntimeSession:
 
     def run_routine(self, name: str) -> dict:
         routines = {
-            "open_menu": [{"button": "start", "hold_frames": 2, "settle_frames": 120}],
-            "close_menu": [{"button": "b", "hold_frames": 2, "settle_frames": 60}],
+            "open_menu": [{"button": "start", "hold_frames": 2, "settle_frames": 90}],
+            "close_menu": [{"button": "b", "hold_frames": 2, "settle_frames": 40}],
             "advance_dialogue": [{"button": "a", "hold_frames": 2, "settle_frames": 240}],
-            "move_up": [{"button": "up", "hold_frames": 8, "settle_frames": 20}],
-            "move_down": [{"button": "down", "hold_frames": 8, "settle_frames": 20}],
-            "move_left": [{"button": "left", "hold_frames": 8, "settle_frames": 20}],
-            "move_right": [{"button": "right", "hold_frames": 8, "settle_frames": 20}],
+            "move_up": [{"button": "up", "hold_frames": 8, "settle_frames": 16}],
+            "move_down": [{"button": "down", "hold_frames": 8, "settle_frames": 16}],
+            "move_left": [{"button": "left", "hold_frames": 8, "settle_frames": 16}],
+            "move_right": [{"button": "right", "hold_frames": 8, "settle_frames": 16}],
+            "face_up": [{"button": "up", "hold_frames": 1, "settle_frames": 6}],
+            "face_down": [{"button": "down", "hold_frames": 1, "settle_frames": 6}],
+            "face_left": [{"button": "left", "hold_frames": 1, "settle_frames": 6}],
+            "face_right": [{"button": "right", "hold_frames": 1, "settle_frames": 6}],
         }
         if name not in routines:
             supported = ", ".join(sorted(routines))
@@ -241,6 +266,117 @@ class RuntimeSession:
         result["routine"] = {"name": name}
         return result
 
+    def follow_objective(self, max_steps: int = 12) -> dict:
+        steps: list[dict] = []
+        initial_snapshot = self.telemetry()
+        snapshot = initial_snapshot
+
+        for _ in range(max_steps):
+            if snapshot["mode"] != "field":
+                break
+            objective = snapshot.get("navigation", {}).get("objective")
+            if objective is None:
+                break
+
+            decision = self._choose_field_action(snapshot)
+            decision = self._refine_field_decision(snapshot, decision)
+            if decision["type"] == "routine":
+                snapshot = self.run_routine(decision["name"])
+            elif decision["type"] == "action":
+                snapshot = self.tap(decision["button"])
+            elif decision["type"] == "tick":
+                snapshot = self.tick(decision["frames"])
+            else:
+                break
+
+            steps.append(
+                {
+                    "decision": decision,
+                    "after": self._trace_state(snapshot),
+                }
+            )
+            if snapshot["mode"] != "field":
+                break
+            if snapshot.get("navigation", {}).get("consecutive_failures", 0) >= 2:
+                break
+            if initial_snapshot.get("navigation", {}).get("milestone") != snapshot.get("navigation", {}).get("milestone"):
+                break
+
+        macro_trace = {
+            "timestamp": self._timestamp(),
+            "kind": "follow_objective",
+            "max_steps": max_steps,
+            "before": self._trace_state(initial_snapshot),
+            "after": self._trace_state(snapshot),
+            "steps": steps,
+        }
+        self._record_trace(macro_trace)
+        snapshot["macro_trace"] = macro_trace
+        return snapshot
+
+    def _refine_field_decision(self, snapshot: dict, decision: dict) -> dict:
+        return decision
+
+    def _plan_objective_path(self, snapshot: dict, objective: dict, *, max_depth: int) -> list[str]:
+        start_distance = self._objective_distance(snapshot, objective)
+        if start_distance is None:
+            return []
+
+        start_state = self._capture_runtime_state()
+        start_key = self._search_state_key(snapshot)
+        start_rank = milestone_rank(snapshot.get("navigation", {}).get("milestone"))
+        frontier: list[tuple[int, int, int, dict, tuple[bytes, dict, dict], list[str]]] = []
+        best_distance = start_distance
+        best_path: list[str] = []
+        sequence = 0
+        visited = {start_key: 0}
+
+        heappush(frontier, (start_distance, 0, sequence, snapshot, start_state, []))
+        sequence += 1
+
+        try:
+            while frontier:
+                _, depth, _, node_snapshot, node_state, path = heappop(frontier)
+                if depth >= max_depth:
+                    continue
+
+                preferred = path[0] if path else "up"
+                for direction in self._candidate_directions(node_snapshot, objective, preferred=preferred):
+                    probe = self._simulate_direction_from_state(node_state, node_snapshot, direction)
+                    if probe is None:
+                        continue
+                    child_snapshot = probe["snapshot"]
+                    child_state = probe["state"]
+
+                    score = self._score_objective_probe(node_snapshot, probe, objective)
+                    if score is None:
+                        continue
+
+                    child_path = path + [direction]
+                    child_rank = milestone_rank(child_snapshot.get("navigation", {}).get("milestone"))
+                    if child_rank > start_rank or score == 0:
+                        return child_path
+
+                    child_key = self._search_state_key(child_snapshot)
+                    if visited.get(child_key, max_depth + 1) <= depth + 1:
+                        continue
+                    visited[child_key] = depth + 1
+
+                    if score < best_distance:
+                        best_distance = score
+                        best_path = child_path
+
+                    heappush(
+                        frontier,
+                        (depth + 1 + score, depth + 1, sequence, child_snapshot, child_state, child_path),
+                    )
+                    sequence += 1
+        finally:
+            self._restore_runtime_state(start_state)
+            self._last_observation = snapshot
+
+        return best_path
+
     def planner_step(self, goal: str = "progress") -> dict:
         snapshot = self.telemetry()
         self._update_planner_state(snapshot)
@@ -248,6 +384,8 @@ class RuntimeSession:
 
         if decision["type"] == "routine":
             result = self.run_routine(decision["name"])
+        elif decision["type"] == "action":
+            result = self.tap(decision["button"])
         elif decision["type"] == "tick":
             result = self.tick(decision["frames"])
         else:
@@ -264,6 +402,7 @@ class RuntimeSession:
                 "passed": snapshot["mode"] != result["mode"]
                 or snapshot["dialogue"]["visible_lines"] != result["dialogue"]["visible_lines"]
                 or snapshot["menu"]["selected_item_text"] != result["menu"]["selected_item_text"]
+                or snapshot["map"]["id"] != result["map"]["id"]
                 or (snapshot["map"]["x"], snapshot["map"]["y"]) != (result["map"]["x"], result["map"]["y"]),
             },
         }
@@ -276,6 +415,16 @@ class RuntimeSession:
     def telemetry(self) -> dict:
         with self._lock:
             return self._snapshot_unlocked()
+
+    def snapshot_bundle(self) -> dict:
+        with self._lock:
+            telemetry = self._snapshot_unlocked()
+            buffer = io.BytesIO()
+            self.pyboy.screen.image.save(buffer, format="PNG")
+            return {
+                "telemetry": telemetry,
+                "frame_png_base64": base64.b64encode(buffer.getvalue()).decode("ascii"),
+            }
 
     def recent_traces(self, limit: int = 50) -> dict:
         if limit < 1:
@@ -305,16 +454,21 @@ class RuntimeSession:
     def execute_agent_action(self, action_id: str, reason: str | None = None) -> dict:
         context = self.agent_context()
         actions = {action["id"]: action for action in context["allowed_actions"]}
-        if action_id not in actions:
+        resolved_action_id = action_id
+        if resolved_action_id not in actions:
+            resolved_action_id = self._resolve_agent_action_alias(action_id, actions)
+        if resolved_action_id not in actions:
             supported = ", ".join(sorted(actions))
             raise ValueError(f"Unsupported agent action '{action_id}'. Expected one of: {supported}")
 
-        action = actions[action_id]
+        action = actions[resolved_action_id]
         action_type = action["type"]
         if action_type == "action":
             result = self.tap(action["button"])
         elif action_type == "routine":
             result = self.run_routine(action["name"])
+        elif action_type == "macro" and action["name"] == "follow_objective":
+            result = self.follow_objective()
         elif action_type == "tick":
             result = self.tick(action["frames"])
         elif action_type == "save_state":
@@ -327,7 +481,8 @@ class RuntimeSession:
         execution_trace = {
             "timestamp": self._timestamp(),
             "kind": "agent_action",
-            "action_id": action_id,
+            "action_id": resolved_action_id,
+            "requested_action_id": action_id,
             "action": action,
             "reason": reason,
             "after": self._trace_state(result),
@@ -335,6 +490,32 @@ class RuntimeSession:
         self._record_trace(execution_trace)
         result["agent_action"] = execution_trace
         return result
+
+    def _resolve_agent_action_alias(self, action_id: str, actions: dict[str, dict]) -> str:
+        button_aliases = {
+            "press_a": "a",
+            "press_b": "b",
+            "press_start": "start",
+            "press_select": "select",
+        }
+        routine_aliases = {
+            "up": "move_up",
+            "down": "move_down",
+            "left": "move_left",
+            "right": "move_right",
+        }
+
+        if action_id in routine_aliases and routine_aliases[action_id] in actions:
+            return routine_aliases[action_id]
+
+        button = button_aliases.get(action_id)
+        if button is None:
+            return action_id
+
+        for candidate_id, action in actions.items():
+            if action.get("type") == "action" and action.get("button") == button:
+                return candidate_id
+        return action_id
 
     def _choose_planner_action(self, snapshot: dict, goal: str) -> dict:
         if goal != "progress":
@@ -366,13 +547,6 @@ class RuntimeSession:
         }
 
     def _choose_field_action(self, snapshot: dict) -> dict:
-        if snapshot["map"]["id"] == 0:
-            return {
-                "type": "routine",
-                "name": "open_menu",
-                "reason": "At the title screen, the next deterministic step is opening the menu.",
-            }
-
         recent_event_types = [event["type"] for event in snapshot["events"]["recent"][-4:]]
         if self._planner_state["oak_intro_active"]:
             return {
@@ -387,14 +561,128 @@ class RuntimeSession:
                 "frames": 60,
                 "reason": "A script-driven dialogue or menu just closed, so wait for the next scene state.",
             }
+        return choose_field_action(
+            snapshot,
+            planner_state=self._planner_state,
+            map_catalog=self.map_catalog,
+        )
 
-        directions = ("down", "left", "up", "right")
-        direction = directions[self._planner_state["field_move_index"] % len(directions)]
-        return {
-            "type": "routine",
-            "name": f"move_{direction}",
-            "reason": f"In the overworld, probe movement by stepping {direction}.",
-        }
+    def _candidate_directions(self, snapshot: dict, objective: dict, *, preferred: str) -> list[str]:
+        current_x = snapshot["map"]["x"]
+        current_y = snapshot["map"]["y"]
+        ordered: list[str] = []
+
+        if objective["kind"] == "trigger_region":
+            primary = "up" if objective["axis"] == "y" and current_y > objective["value"] else None
+            if objective["axis"] == "y" and current_y < objective["value"]:
+                primary = "down"
+            if objective["axis"] == "x" and current_x > objective["value"]:
+                primary = "left"
+            if objective["axis"] == "x" and current_x < objective["value"]:
+                primary = "right"
+            if primary:
+                ordered.append(primary)
+        else:
+            target = objective.get("target")
+            if target:
+                delta_x = target["x"] - current_x
+                delta_y = target["y"] - current_y
+                if delta_y < 0:
+                    ordered.append("up")
+                elif delta_y > 0:
+                    ordered.append("down")
+                if delta_x < 0:
+                    ordered.append("left")
+                elif delta_x > 0:
+                    ordered.append("right")
+
+        ordered.append(preferred)
+        for direction in ("up", "down", "left", "right"):
+            if direction not in ordered:
+                ordered.append(direction)
+        return ordered
+
+    def _simulate_direction(self, snapshot: dict, button: str) -> dict | None:
+        base_state = self._capture_runtime_state()
+        return self._simulate_direction_from_state(base_state, snapshot, button)
+
+    def _simulate_direction_from_state(
+        self,
+        base_state: tuple[bytes, dict, dict],
+        snapshot: dict,
+        button: str,
+    ) -> dict | None:
+        try:
+            candidate = self.press(button, hold_frames=8, settle_frames=16, record_trace=False)
+            return {
+                "button": button,
+                "snapshot": candidate,
+                "state": self._capture_runtime_state(),
+            }
+        finally:
+            self._restore_runtime_state(base_state)
+            self._last_observation = snapshot
+
+    def _score_objective_probe(self, before: dict, probe: dict, objective: dict) -> int | None:
+        after = probe["snapshot"]
+        current_rank = milestone_rank(before.get("navigation", {}).get("milestone"))
+        next_rank = milestone_rank(after.get("navigation", {}).get("milestone"))
+
+        if next_rank > current_rank:
+            return 0
+        if next_rank and next_rank < current_rank:
+            return None
+
+        before_distance = self._objective_distance(before, objective)
+        after_distance = self._objective_distance(after, objective)
+        if after_distance is None:
+            return None
+
+        if after["mode"] != before["mode"] or after["dialogue"]["active"] != before["dialogue"]["active"]:
+            return max(after_distance - 2, 0)
+
+        if after["map"]["id"] != before["map"]["id"]:
+            target_map = objective.get("target_map")
+            if target_map and target_map != "LAST_MAP" and after["map"].get("const_name") == target_map:
+                return 0
+            return None
+
+        if before_distance is not None and after_distance > before_distance:
+            return None
+        if (
+            after["map"]["x"] == before["map"]["x"]
+            and after["map"]["y"] == before["map"]["y"]
+            and after["mode"] == before["mode"]
+            and after["dialogue"]["visible_lines"] == before["dialogue"]["visible_lines"]
+        ):
+            return None
+        return after_distance
+
+    def _objective_distance(self, snapshot: dict, objective: dict) -> int | None:
+        if objective["kind"] == "trigger_region":
+            axis = objective.get("axis")
+            value = objective.get("value")
+            if axis == "y" and value is not None:
+                return abs(snapshot["map"]["y"] - value)
+            if axis == "x" and value is not None:
+                return abs(snapshot["map"]["x"] - value)
+            return None
+        target = objective.get("target")
+        if not target:
+            return None
+        return abs(snapshot["map"]["x"] - target["x"]) + abs(snapshot["map"]["y"] - target["y"])
+
+    def _search_state_key(self, snapshot: dict) -> tuple:
+        return (
+            snapshot["mode"],
+            snapshot["map"]["id"],
+            snapshot["map"]["x"],
+            snapshot["map"]["y"],
+            snapshot["map"]["script"],
+            tuple(snapshot["dialogue"]["visible_lines"]),
+            snapshot["menu"]["active"],
+            snapshot.get("navigation", {}).get("milestone"),
+        )
 
     def _choose_menu_action(self, snapshot: dict, *, allow_dialogue_fallback: bool) -> dict:
         visible_items = snapshot["menu"]["visible_items"]
@@ -530,7 +818,7 @@ class RuntimeSession:
     def save_state(self, slot: str = "quick") -> dict:
         path = self._state_path(slot)
         with self._lock:
-            snapshot_before_save = build_telemetry(self.pyboy, self.telemetry_addresses)
+            snapshot_before_save = self._build_snapshot_unlocked()
             with path.open("wb") as handle:
                 self.pyboy.save_state(handle)
             metadata = {
@@ -573,6 +861,7 @@ class RuntimeSession:
         with self._lock:
             with path.open("rb") as handle:
                 self.pyboy.load_state(handle)
+            self._navigation_state = self._fresh_navigation_state()
             metadata = self._load_state_metadata(path)
             snapshot = self._snapshot_unlocked(
                 suppress_derive=True,
@@ -592,13 +881,30 @@ class RuntimeSession:
             }
             return snapshot
 
+    def _capture_runtime_state(self) -> tuple[bytes, dict, dict]:
+        with self._lock:
+            buffer = io.BytesIO()
+            self.pyboy.save_state(buffer)
+            return (
+                buffer.getvalue(),
+                deepcopy(self._navigation_state),
+                deepcopy(self._planner_state),
+            )
+
+    def _restore_runtime_state(self, state: tuple[bytes, dict, dict]) -> None:
+        state_bytes, navigation_state, planner_state = state
+        with self._lock:
+            self.pyboy.load_state(io.BytesIO(state_bytes))
+            self._navigation_state = deepcopy(navigation_state)
+            self._planner_state = deepcopy(planner_state)
+
     def _snapshot_unlocked(
         self,
         *,
         suppress_derive: bool = False,
         extra_events: list[dict] | None = None,
     ) -> dict:
-        snapshot = build_telemetry(self.pyboy, self.telemetry_addresses)
+        snapshot = self._build_snapshot_unlocked()
         events = [] if suppress_derive else derive_events(self._last_observation, snapshot)
         if extra_events:
             events.extend(extra_events)
@@ -608,6 +914,15 @@ class RuntimeSession:
             "latest": events[-1] if events else None,
             "recent": list(self._event_log),
         }
+        return snapshot
+
+    def _build_snapshot_unlocked(self) -> dict:
+        snapshot = build_telemetry(self.pyboy, self.telemetry_addresses)
+        enrich_snapshot_with_navigation(
+            snapshot,
+            map_catalog=self.map_catalog,
+            navigation_state=self._navigation_state,
+        )
         return snapshot
 
     def _settle_after_input_unlocked(
@@ -630,7 +945,7 @@ class RuntimeSession:
         while True:
             self.pyboy.tick()
             total_ticks += 1
-            snapshot = build_telemetry(self.pyboy, self.telemetry_addresses)
+            snapshot = self._build_snapshot_unlocked()
             signature = self._stability_signature(snapshot)
             if signature == last_signature:
                 stable_count += 1
@@ -702,17 +1017,18 @@ class RuntimeSession:
         dialogue_changed = before["dialogue"]["visible_lines"] != after["dialogue"]["visible_lines"]
         moved = (before["map"]["x"], before["map"]["y"]) != (after["map"]["x"], after["map"]["y"])
         mode_changed = before["mode"] != after["mode"]
+        map_changed = before["map"]["id"] != after["map"]["id"]
 
         if button == "start":
             checks.append({"name": "menu_toggled", "passed": menu_opened or menu_closed or mode_changed})
         elif button == "b":
             checks.append({"name": "menu_or_dialogue_closed", "passed": menu_closed or dialogue_changed or mode_changed})
         elif button == "a":
-            checks.append({"name": "dialogue_or_selection_progressed", "passed": dialogue_changed or mode_changed or moved})
+            checks.append({"name": "dialogue_or_selection_progressed", "passed": dialogue_changed or mode_changed or moved or map_changed})
         elif button in {"up", "down", "left", "right"}:
-            checks.append({"name": "player_or_cursor_moved", "passed": moved or dialogue_changed or before["menu"]["selected_item_text"] != after["menu"]["selected_item_text"]})
+            checks.append({"name": "player_or_cursor_moved", "passed": moved or map_changed or dialogue_changed or before["menu"]["selected_item_text"] != after["menu"]["selected_item_text"]})
         else:
-            checks.append({"name": "state_changed", "passed": mode_changed or moved or dialogue_changed})
+            checks.append({"name": "state_changed", "passed": mode_changed or moved or map_changed or dialogue_changed})
 
         return {
             "passed": all(check["passed"] for check in checks),
@@ -751,6 +1067,7 @@ class RuntimeSession:
                 )
             return lambda snapshot: (
                 (snapshot["map"]["x"], snapshot["map"]["y"]) != (before["map"]["x"], before["map"]["y"])
+                or snapshot["map"]["id"] != before["map"]["id"]
                 or snapshot["mode"] != before["mode"]
                 or snapshot["dialogue"]["visible_lines"] != before["dialogue"]["visible_lines"]
             )
@@ -764,7 +1081,7 @@ class RuntimeSession:
         if button_name == "start":
             return 180
         if button_name in {"up", "down", "left", "right"}:
-            return 90
+            return 72
         return 24
 
     def _trace_state(self, snapshot: dict) -> dict:
@@ -772,6 +1089,8 @@ class RuntimeSession:
             "frame": snapshot["frame"],
             "mode": snapshot["mode"],
             "map": snapshot["map"],
+            "movement": snapshot.get("movement"),
+            "navigation": snapshot.get("navigation"),
             "menu": {
                 "active": snapshot["menu"]["active"],
                 "selected_item_text": snapshot["menu"]["selected_item_text"],
@@ -801,6 +1120,22 @@ class RuntimeSession:
         if not metadata_path.exists():
             return None
         return json.loads(metadata_path.read_text(encoding="utf-8"))
+
+    def _update_navigation_state(self, *, before: dict, after: dict, payload: dict) -> None:
+        update_navigation_state(
+            self._navigation_state,
+            before=before,
+            after=after,
+            payload=payload,
+        )
+
+    def _fresh_navigation_state(self) -> dict:
+        return {
+            "last_result": None,
+            "last_transition": None,
+            "consecutive_failures": 0,
+            "blocked_directions": [],
+        }
 
     def frame_png(self) -> bytes:
         with self._lock:

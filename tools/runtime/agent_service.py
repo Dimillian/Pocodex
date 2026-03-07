@@ -32,8 +32,9 @@ class AgentController:
             "running": False,
             "state": "idle",
             "mode": None,
+            "fresh_thread": True,
             "step_count": 0,
-            "step_delay_ms": 500,
+            "step_delay_ms": 100,
             "max_steps": None,
             "thread_id": None,
             "turn_id": None,
@@ -59,8 +60,9 @@ class AgentController:
         self,
         *,
         mode: str = "codex",
-        step_delay_ms: int = 500,
+        step_delay_ms: int = 100,
         max_steps: int | None = None,
+        fresh_thread: bool = True,
     ) -> dict[str, Any]:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
@@ -71,6 +73,7 @@ class AgentController:
                     "running": True,
                     "state": "starting",
                     "mode": mode,
+                    "fresh_thread": fresh_thread,
                     "step_count": 0,
                     "step_delay_ms": step_delay_ms,
                     "max_steps": max_steps,
@@ -91,6 +94,7 @@ class AgentController:
                     "mode": mode,
                     "step_delay_ms": step_delay_ms,
                     "max_steps": max_steps,
+                    "fresh_thread": fresh_thread,
                 },
                 name="pokered-agent-controller",
                 daemon=True,
@@ -103,6 +107,7 @@ class AgentController:
                 "mode": mode,
                 "step_delay_ms": step_delay_ms,
                 "max_steps": max_steps,
+                "fresh_thread": fresh_thread,
             }
         )
         return self.status()
@@ -127,13 +132,14 @@ class AgentController:
         if thread is not None and thread.is_alive():
             thread.join(timeout=1)
 
-    def _run_loop(self, *, mode: str, step_delay_ms: int, max_steps: int | None) -> None:
+    def _run_loop(self, *, mode: str, step_delay_ms: int, max_steps: int | None, fresh_thread: bool) -> None:
         codex_client = None
         try:
             if mode == "codex":
                 codex_client = CodexAppServerClient(
                     cwd=self.repo_root,
                     thread_state_path=self.thread_state_path,
+                    fresh_thread=fresh_thread,
                 )
                 codex_client.start()
                 self._update_status(

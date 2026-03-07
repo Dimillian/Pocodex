@@ -76,7 +76,11 @@ def load_charmap(path: str | Path) -> Charmap:
 
 
 def decode_tilemap_rows(tilemap_rows: list[list[int]], charmap: Charmap) -> list[str]:
-    return ["".join(charmap.decode_byte(value) for value in row) for row in tilemap_rows]
+    return ["".join(row) for row in decode_tilemap_cells(tilemap_rows, charmap)]
+
+
+def decode_tilemap_cells(tilemap_rows: list[list[int]], charmap: Charmap) -> list[list[str]]:
+    return [[charmap.decode_byte(value) for value in row] for row in tilemap_rows]
 
 
 def clean_ui_text(text: str) -> str:
@@ -84,7 +88,7 @@ def clean_ui_text(text: str) -> str:
 
 
 def is_box_present(tilemap_rows: list[list[int]], x0: int, y0: int, x1: int, y1: int) -> bool:
-    decoded = decode_tilemap_rows(tilemap_rows[y0 : y1 + 1], DEFAULT_CHARMAP)
+    decoded = decode_tilemap_cells(tilemap_rows[y0 : y1 + 1], DEFAULT_CHARMAP)
     if not decoded or len(decoded) < (y1 - y0 + 1):
         return False
 
@@ -113,10 +117,13 @@ def extract_box_lines(
     y0: int,
     x1: int,
     y1: int,
+    decoded_cells: list[list[str]] | None = None,
 ) -> list[str]:
     lines: list[str] = []
-    for row in decoded_rows[y0 + 1 : y1]:
-        inner = clean_ui_text(row[x0 + 1 : x1])
+    if decoded_cells is None:
+        decoded_cells = [list(row) for row in decoded_rows]
+    for row in decoded_cells[y0 + 1 : y1]:
+        inner = clean_ui_text("".join(row[x0 + 1 : x1]))
         if inner:
             lines.append(inner)
     return lines

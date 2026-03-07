@@ -62,6 +62,7 @@ Available ROM values:
 ## Endpoints
 
 - `GET /health`
+- `GET /snapshot`
 - `GET /telemetry`
 - `GET /agent_context`
 - `GET /agent/status`
@@ -89,9 +90,17 @@ Available ROM values:
 - validated menu extraction that only activates when a visible cursor is on screen
 - a rolling event log for mode, map, menu, dialogue, and battle transitions
 
+`GET /snapshot` returns telemetry plus a base64-encoded PNG from the same locked
+runtime read, which keeps the UI frame and the agent-visible state in sync.
+
 `GET /agent_context` currently includes:
 
 - a compact observation distilled from telemetry
+- structured model input with:
+  - map names, sizes, warps, and objects
+  - movement and facing state
+  - current navigation objective
+  - recent movement and transition results
 - recent events and recent action traces
 - planner state
 - allowed next actions for the current mode
@@ -103,7 +112,8 @@ Available ROM values:
 
 `GET /agent/status` returns the live state of the built-in UI agent controller,
 including whether it is running, the current Codex thread/turn ids, the last
-decision, the last execution result, and recent controller logs.
+decision, the last execution result, whether it started from a fresh Codex
+thread, and recent controller logs.
 
 The control layer currently includes:
 
@@ -118,10 +128,11 @@ Examples:
 
 ```bash
 curl http://127.0.0.1:8765/health
+curl http://127.0.0.1:8765/snapshot | jq '.telemetry'
 curl http://127.0.0.1:8765/telemetry | jq
 curl http://127.0.0.1:8765/agent_context | jq
 curl http://127.0.0.1:8765/agent/status | jq
-curl -X POST http://127.0.0.1:8765/agent/start -H 'content-type: application/json' -d '{"mode":"codex","step_delay_ms":500}'
+curl -X POST http://127.0.0.1:8765/agent/start -H 'content-type: application/json' -d '{"mode":"codex","step_delay_ms":100,"fresh_thread":true}'
 curl -X POST http://127.0.0.1:8765/agent/stop
 curl -X POST http://127.0.0.1:8765/execute_action -H 'content-type: application/json' -d '{"action":"press_start","reason":"open the title menu"}'
 curl -o frame.png http://127.0.0.1:8765/frame
@@ -153,6 +164,7 @@ Use the external runner when you want a controller process outside the runtime:
 ```bash
 ./agent-runner --mode codex --steps 3
 ./agent-runner --steps 3
+./agent-runner --resume-thread --steps 3
 ./agent-runner --dry-run --steps 1
 ./agent-runner --print-prompt
 ```
@@ -163,6 +175,7 @@ It currently:
 - can choose one action from `allowed_actions` in two modes:
   - `--mode codex` uses `codex app-server` over stdio and keeps a persisted
     Codex thread in `.runtime-traces/agent-runner/codex-thread.json`
+    but starts with a fresh thread by default unless `--resume-thread` is set
   - `--mode heuristic` uses the current heuristic hint directly
 - executes that action through `/execute_action`
 - logs each step to `.runtime-traces/agent-runner/steps.jsonl`
@@ -177,6 +190,7 @@ The root page serves a minimal browser shell with:
 - live framebuffer
 - pause/resume and step controls
 - start/stop controls for the built-in Codex agent
+- fresh-thread toggle for Codex agent starts
 - quick save/load state controls
 - planner-step control for deterministic progression
 - routine buttons for common gameplay actions

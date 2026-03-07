@@ -30,7 +30,19 @@ class SequenceRequest(BaseModel):
 
 
 class RoutineRequest(BaseModel):
-    name: Literal["open_menu", "close_menu", "advance_dialogue", "move_up", "move_down", "move_left", "move_right"]
+    name: Literal[
+        "open_menu",
+        "close_menu",
+        "advance_dialogue",
+        "move_up",
+        "move_down",
+        "move_left",
+        "move_right",
+        "face_up",
+        "face_down",
+        "face_left",
+        "face_right",
+    ]
 
 
 class PlannerStepRequest(BaseModel):
@@ -44,5 +56,6 @@ class AgentActionRequest(BaseModel):
 
 class AgentControlStartRequest(BaseModel):
     mode: Literal["codex", "heuristic"] = "codex"
-    step_delay_ms: int = Field(default=500, ge=0, le=10000)
+    step_delay_ms: int = Field(default=100, ge=0, le=10000)
     max_steps: int | None = Field(default=None, ge=1, le=100000)
+    fresh_thread: bool = True
