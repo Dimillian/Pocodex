@@ -86,7 +86,8 @@ def build_agent_context(
             "Choose exactly one next action from allowed_actions.",
             "Prefer resolving the current interaction over guessing movement.",
             "When a menu is visible, navigate or confirm within that menu before moving in the field.",
-            "When navigation.objective is present, prefer actions that move toward or interact with that objective.",
+            "When navigation.target_affordance is present, prefer actions that move toward or interact with that target before relying on the older objective fallback.",
+            "When using follow_target, include an affordance_id from navigation.ranked_affordances if you want to choose a specific world target yourself.",
             "If movement fails twice in a row, prefer waiting briefly and re-observing before forcing another direction.",
             "Use save/load only when recovery is needed, not as a normal action.",
             "If the state is ambiguous, choose wait_short rather than inventing a risky action.",
@@ -98,6 +99,7 @@ def build_agent_context(
             "schema": {
                 "action": "one action id from allowed_actions",
                 "reason": "short explanation grounded in the observation",
+                "affordance_id": "optional affordance id from navigation.ranked_affordances when action is follow_target",
             },
         },
     }
@@ -147,6 +149,7 @@ def build_allowed_actions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     if mode == "field":
         actions.extend(
             [
+                {"id": "follow_target", "type": "macro", "name": "follow_target", "description": "Use local navigation to pursue the highest-confidence target affordance for several verified steps."},
                 {"id": "follow_objective", "type": "macro", "name": "follow_objective", "description": "Use local navigation to follow the current story objective for several verified steps."},
                 {"id": "move_up", "type": "routine", "name": "move_up", "description": "Attempt to move one step up."},
                 {"id": "move_down", "type": "routine", "name": "move_down", "description": "Attempt to move one step down."},
@@ -185,6 +188,7 @@ def build_heuristic_hint(snapshot: dict[str, Any], planner_state: dict[str, Any]
     interaction_type = interaction.get("type")
     navigation = snapshot.get("navigation") or {}
     objective = navigation.get("objective")
+    target_affordance = navigation.get("target_affordance")
     dialogue_visible = snapshot["dialogue"]["active"] or snapshot["screen"].get("message_box_present", False)
     dialogue_context = build_dialogue_context(snapshot)
     if interaction_type and interaction_type != "field":
@@ -209,11 +213,16 @@ def build_heuristic_hint(snapshot: dict[str, Any], planner_state: dict[str, Any]
         return {"action": "move_down", "reason": "A menu is open without a selected target."}
     if mode == "field" and snapshot["map"]["id"] == 0 and snapshot["map"]["x"] == 0 and snapshot["map"]["y"] == 0:
         return {"action": "press_start", "reason": "At the title screen, opening the menu is the next deterministic step."}
-    if mode == "field" and planner_state.get("oak_intro_active"):
-        return {"action": "press_a", "reason": "The intro script still appears active."}
     if mode == "field":
         if navigation.get("consecutive_failures", 0) >= 2:
             return {"action": "wait_short", "reason": "Recent movement attempts failed; re-observe before pushing another direction."}
+        if target_affordance:
+            return {
+                "action": "follow_target",
+                "reason": f"Use local navigation to pursue {target_affordance['label']} based on the world-model ranking.",
+            }
+        if planner_state.get("oak_intro_active"):
+            return {"action": "press_a", "reason": "The intro script still appears active."}
         if objective:
             objective_label = objective.get("label", "the current objective")
             return {"action": "follow_objective", "reason": f"Use local navigation to progress toward {objective_label}."}
@@ -241,18 +250,28 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
     battle = observation.get("battle") or {}
     selected_move = ((battle.get("move_menu") or {}).get("selected_move") or {}).get("name")
     objective = navigation.get("objective")
+    target_affordance = navigation.get("target_affordance")
     objective_line = "none"
     if objective:
         objective_line = f"{objective.get('kind')}: {objective.get('label')}"
+    target_line = "none"
+    if target_affordance:
+        target_line = f"{target_affordance.get('kind')}: {target_affordance.get('label')}"
     affordance_lines = context["model_input"]["observation"]["navigation"].get("affordances") or []
     affordance_summary = ", ".join(
         f"{affordance['id']}={affordance['kind']}"
         for affordance in affordance_lines[:8]
     ) or "none"
+    ranked_affordances = navigation.get("ranked_affordances") or []
+    ranked_summary = ", ".join(
+        f"{affordance['id']}({affordance['score']})"
+        for affordance in ranked_affordances[:6]
+    ) or "none"
     facing = movement.get("facing") or "unknown"
     move_result = navigation.get("last_result", {}).get("kind") if navigation.get("last_result") else "none"
     failures = navigation.get("consecutive_failures", 0)
     map_name = observation["map"].get("name") or observation["map"].get("const_name") or f"Map {observation['map']['id']}"
+    target_reason = navigation.get("target_reason") or "none"
 
     return (
         "You are choosing the next action for Pokemon Blue.\n"
@@ -260,8 +279,11 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
         f"Interaction type: {interaction.get('type')}\n"
         f"Map: {map_name} (id={observation['map']['id']}) x={observation['map']['x']} y={observation['map']['y']}\n"
         f"Facing: {facing}\n"
+        f"Target affordance: {target_line}\n"
+        f"Target reason: {target_reason}\n"
         f"Objective: {objective_line}\n"
         f"Affordances: {affordance_summary}\n"
+        f"Ranked affordances: {ranked_summary}\n"
         f"Last movement result: {move_result}; consecutive failures: {failures}\n"
         f"Dialogue: {dialogue_line}\n"
         f"Dialogue visible: {dialogue_context.get('visible', False)}; "
@@ -281,7 +303,7 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
         + "\n".join(f"- {rule}" for rule in context["rules"])
         + "\n"
         f"Allowed actions: {allowed_ids}\n"
-        'Return JSON only: {"action":"...", "reason":"..."}'
+        'Return JSON only: {"action":"...", "reason":"...", "affordance_id":"...optional..."}'
     )
 
 

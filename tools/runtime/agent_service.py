@@ -179,9 +179,15 @@ class AgentController:
                         "action": tool_result.get("action", action_id),
                         "reason": reason,
                     }
+                    if tool_result.get("affordance_id"):
+                        decision["affordance_id"] = tool_result["affordance_id"]
                 else:
                     try:
-                        result = self.session.execute_agent_action(action_id, reason)
+                        result = self.session.execute_agent_action(
+                            action_id,
+                            reason,
+                            affordance_id=decision.get("affordance_id"),
+                        )
                     except ValueError as exc:
                         fallback_action = "wait_short"
                         fallback_reason = (
@@ -302,14 +308,16 @@ class AgentController:
 
     def _handle_codex_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         reason = arguments.get("reason")
+        affordance_id = arguments.get("affordance_id")
         try:
-            result = self.session.execute_agent_action(tool_name, reason)
+            result = self.session.execute_agent_action(tool_name, reason, affordance_id=affordance_id)
         except ValueError as exc:
             context = self.session.agent_context()
             record = {
                 "tool": tool_name,
                 "action": tool_name,
                 "reason": reason,
+                "affordance_id": affordance_id,
                 "success": False,
                 "error": str(exc),
                 "allowed_actions": [action["id"] for action in context["allowed_actions"]],
@@ -341,6 +349,7 @@ class AgentController:
             "tool": tool_name,
             "action": result.get("agent_action", {}).get("action_id", tool_name),
             "reason": reason,
+            "affordance_id": affordance_id,
             "success": True,
             "result": result_summary,
         }

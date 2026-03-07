@@ -302,6 +302,13 @@ Tasks:
 - [x] Add a separate overworld navigation policy outside `session.py`
 - [x] Build collision-aware pathfinding from map blocks / blocksets / collision tiles
 - [x] Add macro objective following so Codex can pick subgoals instead of every tile move
+- [x] Add persistent affordance memory:
+  - visited maps
+  - repeated/no-op affordance tracking
+  - recent target history
+- [x] Add world-model affordance scoring and target selection
+- [x] Route navigation and agent context through `target_affordance` first, objective fallback second
+- [x] Let Codex choose an explicit `affordance_id` for `follow_target` instead of only following the runtime's default target
 - [x] Reduce per-turn latency by:
   - lowering the default agent step delay
   - letting the runtime execute several verified local movement steps per agent action
@@ -312,7 +319,8 @@ Tasks:
   - leave the house
 - [ ] Make the Pallet Town Oak trigger path fully reliable end to end
 - [ ] Decode Oak intro dialogue text from the actually visible screen state, not only `wTileMap`
-- [ ] Extend the world policy beyond the house/Pallet Town intro path
+- [ ] Replace more map-script/objective heuristics with generic world-model ranking
+- [ ] Add stronger interaction memory so the world model can infer post-battle/post-lab progression without looping on Oak
 
 Exit criteria:
 

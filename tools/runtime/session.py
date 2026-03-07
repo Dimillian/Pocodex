@@ -20,6 +20,7 @@ from .controls import normalize_button
 from .map_data import load_map_catalog
 from .objective_manager import milestone_rank
 from .navigator import choose_field_action, enrich_snapshot_with_navigation, update_navigation_state
+from .progress_memory import capture_progress_memory, fresh_progress_memory, update_progress_memory
 from .symbols import load_symbol_table
 from .telemetry import TelemetryAddresses, build_telemetry, derive_events
 
@@ -72,6 +73,7 @@ class RuntimeSession:
             "rival_name": "BLUE",
         }
         self._navigation_state = self._fresh_navigation_state()
+        self._progress_memory = fresh_progress_memory()
 
         if not self.rom_path.exists():
             raise FileNotFoundError(f"Missing ROM: {self.rom_path}")
@@ -173,8 +175,10 @@ class RuntimeSession:
                 after,
                 map_catalog=self.map_catalog,
                 navigation_state=self._navigation_state,
+                progress_memory=self._progress_memory,
                 planner_state=self._planner_state,
             )
+            self._update_progress_memory(before=before, after=after)
             if record_trace:
                 trace = self._build_action_trace(
                     kind="press",
@@ -214,8 +218,10 @@ class RuntimeSession:
                     after,
                     map_catalog=self.map_catalog,
                     navigation_state=self._navigation_state,
+                    progress_memory=self._progress_memory,
                     planner_state=self._planner_state,
                 )
+                self._update_progress_memory(before=before, after=after)
                 trace = self._build_action_trace(
                     kind="sequence_step",
                     payload={
@@ -272,7 +278,7 @@ class RuntimeSession:
         result["routine"] = {"name": name}
         return result
 
-    def follow_objective(self, max_steps: int = 12) -> dict:
+    def follow_objective(self, max_steps: int = 12, *, affordance_id: str | None = None) -> dict:
         steps: list[dict] = []
         initial_snapshot = self.telemetry()
         snapshot = initial_snapshot
@@ -281,10 +287,11 @@ class RuntimeSession:
             if snapshot["mode"] != "field":
                 break
             objective = snapshot.get("navigation", {}).get("objective")
-            if objective is None:
+            target_affordance = snapshot.get("navigation", {}).get("target_affordance")
+            if objective is None and target_affordance is None:
                 break
 
-            decision = self._choose_field_action(snapshot)
+            decision = self._choose_field_action(snapshot, affordance_id=affordance_id)
             decision = self._refine_field_decision(snapshot, decision)
             if decision["type"] == "routine":
                 snapshot = self.run_routine(decision["name"])
@@ -310,8 +317,9 @@ class RuntimeSession:
 
         macro_trace = {
             "timestamp": self._timestamp(),
-            "kind": "follow_objective",
+            "kind": "follow_target",
             "max_steps": max_steps,
+            "affordance_id": affordance_id,
             "before": self._trace_state(initial_snapshot),
             "after": self._trace_state(snapshot),
             "steps": steps,
@@ -319,6 +327,9 @@ class RuntimeSession:
         self._record_trace(macro_trace)
         snapshot["macro_trace"] = macro_trace
         return snapshot
+
+    def follow_target(self, max_steps: int = 12, *, affordance_id: str | None = None) -> dict:
+        return self.follow_objective(max_steps=max_steps, affordance_id=affordance_id)
 
     def follow_interaction(self, max_steps: int = 6) -> dict:
         steps: list[dict] = []
@@ -501,7 +512,13 @@ class RuntimeSession:
             planner_state=dict(self._planner_state),
         )
 
-    def execute_agent_action(self, action_id: str, reason: str | None = None) -> dict:
+    def execute_agent_action(
+        self,
+        action_id: str,
+        reason: str | None = None,
+        *,
+        affordance_id: str | None = None,
+    ) -> dict:
         context = self.agent_context()
         actions = {action["id"]: action for action in context["allowed_actions"]}
         resolved_action_id = action_id
@@ -518,7 +535,9 @@ class RuntimeSession:
         elif action_type == "routine":
             result = self.run_routine(action["name"])
         elif action_type == "macro" and action["name"] == "follow_objective":
-            result = self.follow_objective()
+            result = self.follow_objective(affordance_id=affordance_id)
+        elif action_type == "macro" and action["name"] == "follow_target":
+            result = self.follow_target(affordance_id=affordance_id)
         elif action_type == "macro" and action["name"] == "follow_interaction":
             result = self.follow_interaction()
         elif action_type == "tick":
@@ -537,6 +556,7 @@ class RuntimeSession:
             "requested_action_id": action_id,
             "action": action,
             "reason": reason,
+            "affordance_id": affordance_id,
             "after": self._trace_state(result),
         }
         self._record_trace(execution_trace)
@@ -645,7 +665,7 @@ class RuntimeSession:
             "reason": "Interaction state is ambiguous, so re-observe briefly.",
         }
 
-    def _choose_field_action(self, snapshot: dict) -> dict:
+    def _choose_field_action(self, snapshot: dict, *, affordance_id: str | None = None) -> dict:
         recent_event_types = [event["type"] for event in snapshot["events"]["recent"][-4:]]
         if snapshot["dialogue"]["active"] or snapshot["screen"].get("message_box_present"):
             return {
@@ -664,6 +684,7 @@ class RuntimeSession:
             snapshot,
             planner_state=self._planner_state,
             map_catalog=self.map_catalog,
+            preferred_affordance_id=affordance_id,
         )
 
     def _candidate_directions(self, snapshot: dict, objective: dict, *, preferred: str) -> list[str]:
@@ -1150,6 +1171,7 @@ class RuntimeSession:
             with path.open("rb") as handle:
                 self.pyboy.load_state(handle)
             self._navigation_state = self._fresh_navigation_state()
+            self._progress_memory = fresh_progress_memory()
             metadata = self._load_state_metadata(path)
             snapshot = self._snapshot_unlocked(
                 suppress_derive=True,
@@ -1169,7 +1191,7 @@ class RuntimeSession:
             }
             return snapshot
 
-    def _capture_runtime_state(self) -> tuple[bytes, dict, dict]:
+    def _capture_runtime_state(self) -> tuple[bytes, dict, dict, dict]:
         with self._lock:
             buffer = io.BytesIO()
             self.pyboy.save_state(buffer)
@@ -1177,14 +1199,16 @@ class RuntimeSession:
                 buffer.getvalue(),
                 deepcopy(self._navigation_state),
                 deepcopy(self._planner_state),
+                capture_progress_memory(self._progress_memory),
             )
 
-    def _restore_runtime_state(self, state: tuple[bytes, dict, dict]) -> None:
-        state_bytes, navigation_state, planner_state = state
+    def _restore_runtime_state(self, state: tuple[bytes, dict, dict, dict]) -> None:
+        state_bytes, navigation_state, planner_state, progress_memory = state
         with self._lock:
             self.pyboy.load_state(io.BytesIO(state_bytes))
             self._navigation_state = deepcopy(navigation_state)
             self._planner_state = deepcopy(planner_state)
+            self._progress_memory = capture_progress_memory(progress_memory)
 
     def _snapshot_unlocked(
         self,
@@ -1210,6 +1234,7 @@ class RuntimeSession:
             snapshot,
             map_catalog=self.map_catalog,
             navigation_state=self._navigation_state,
+            progress_memory=self._progress_memory,
             planner_state=self._planner_state,
         )
         return snapshot
@@ -1416,6 +1441,13 @@ class RuntimeSession:
             before=before,
             after=after,
             payload=payload,
+        )
+
+    def _update_progress_memory(self, *, before: dict, after: dict) -> None:
+        update_progress_memory(
+            self._progress_memory,
+            before=before,
+            after=after,
         )
 
     def _fresh_navigation_state(self) -> dict:

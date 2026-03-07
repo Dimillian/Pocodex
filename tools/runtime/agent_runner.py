@@ -46,7 +46,7 @@ def choose_action_with_codex(
     context: dict[str, Any],
     *,
     codex_client: CodexAppServerClient,
-) -> tuple[dict[str, str], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     result = codex_client.decide_action(context)
     return result["decision"], {
         "thread_id": result["thread_id"],
@@ -79,8 +79,10 @@ def step_once(
         decision, codex_result = choose_action_with_codex(context, codex_client=codex_client)
         action_id = decision["action"]
         reason = decision["reason"]
+        affordance_id = decision.get("affordance_id")
     else:
         action_id, reason = choose_action(context, mode)
+        affordance_id = None
 
     record: dict[str, Any] = {
         "timestamp": datetime.now(UTC).isoformat(),
@@ -97,6 +99,8 @@ def step_once(
         },
         "dry_run": dry_run,
     }
+    if affordance_id:
+        record["decision"]["affordance_id"] = affordance_id
     if codex_result is not None:
         record["codex"] = codex_result
 
@@ -113,6 +117,7 @@ def step_once(
             {
                 "action": action_id,
                 "reason": reason,
+                "affordance_id": affordance_id,
             },
         )
         record["result"] = {
@@ -212,12 +217,14 @@ def _handle_codex_runtime_tool(
     arguments: dict[str, Any],
 ) -> dict[str, Any]:
     reason = arguments.get("reason")
+    affordance_id = arguments.get("affordance_id")
     try:
         result = client.post_json(
             "/execute_action",
             {
                 "action": tool_name,
                 "reason": reason,
+                "affordance_id": affordance_id,
             },
         )
     except error.HTTPError as exc:
@@ -226,6 +233,7 @@ def _handle_codex_runtime_tool(
             "tool": tool_name,
             "action": tool_name,
             "reason": reason,
+            "affordance_id": affordance_id,
             "success": False,
             "error": f"{exc.code} {detail}",
         }
@@ -255,6 +263,7 @@ def _handle_codex_runtime_tool(
         "tool": tool_name,
         "action": result.get("agent_action", {}).get("action_id", tool_name),
         "reason": reason,
+        "affordance_id": affordance_id,
         "success": True,
         "result": result_summary,
     }

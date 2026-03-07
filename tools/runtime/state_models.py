@@ -52,6 +52,7 @@ class PlannerStepRequest(BaseModel):
 class AgentActionRequest(BaseModel):
     action: str = Field(min_length=1, max_length=128)
     reason: str | None = Field(default=None, max_length=1000)
+    affordance_id: str | None = Field(default=None, max_length=128)
 
 
 class AgentControlStartRequest(BaseModel):

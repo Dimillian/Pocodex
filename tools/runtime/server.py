@@ -137,7 +137,11 @@ def agent_stop() -> dict:
 @app.post("/execute_action")
 def execute_action(request: AgentActionRequest) -> dict:
     try:
-        return get_session().execute_agent_action(request.action, request.reason)
+        return get_session().execute_agent_action(
+            request.action,
+            request.reason,
+            affordance_id=request.affordance_id,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -5,6 +5,7 @@ from typing import Any
 
 from .map_data import MapCatalog, build_walkability_grid
 from .objective_manager import build_affordances, build_current_objective
+from .world_model import build_world_model
 
 
 DIRECTION_BY_VALUE = {
@@ -31,6 +32,7 @@ def enrich_snapshot_with_navigation(
     *,
     map_catalog: MapCatalog,
     navigation_state: dict[str, Any],
+    progress_memory: dict[str, Any],
     planner_state: dict[str, Any] | None = None,
 ) -> None:
     map_info = map_catalog.get_by_id(snapshot["map"]["id"])
@@ -91,10 +93,21 @@ def enrich_snapshot_with_navigation(
         affordances=affordances,
         planner_state=planner_state or {},
     )
+    world_model = build_world_model(
+        snapshot,
+        affordances=affordances,
+        progress_memory=progress_memory,
+        objective=objective,
+    )
     snapshot["navigation"] = {
         "objective": objective,
         "milestone": objective.get("milestone") if objective else None,
         "affordances": affordances,
+        "target_affordance": world_model["target_affordance"],
+        "target_reason": world_model["target_reason"],
+        "target_source": world_model["target_source"],
+        "ranked_affordances": world_model["ranked_affordances"],
+        "memory": world_model["memory"],
         "facing": {
             "current": snapshot["movement"]["facing"],
             "moving": snapshot["movement"]["moving_direction"],
@@ -112,6 +125,7 @@ def choose_field_action(
     *,
     planner_state: dict[str, Any],
     map_catalog: MapCatalog,
+    preferred_affordance_id: str | None = None,
 ) -> dict[str, Any]:
     if snapshot["map"]["id"] == 0 and snapshot["map"]["x"] == 0 and snapshot["map"]["y"] == 0:
         return {
@@ -121,17 +135,37 @@ def choose_field_action(
         }
 
     objective = snapshot.get("navigation", {}).get("objective")
-    if objective is None:
-        return _fallback_exploration(snapshot, planner_state)
+    target_affordance = _resolve_target_affordance(snapshot, preferred_affordance_id)
+    map_info = map_catalog.get_by_id(snapshot["map"]["id"])
 
-    if objective["kind"] == "script_progress":
+    if objective and objective["kind"] == "script_progress":
         return {
             "type": "tick",
             "frames": 20,
             "reason": objective["label"],
         }
 
-    map_info = map_catalog.get_by_id(snapshot["map"]["id"])
+    if target_affordance is not None:
+        path = _path_to_objective(snapshot, target_affordance, map_info=map_info, map_catalog=map_catalog)
+        if target_affordance["kind"] == "warp":
+            if path:
+                return _path_step(path, target_affordance["label"])
+            return _step_toward_point(snapshot, planner_state, target_affordance, exact=True)
+        if target_affordance["kind"] == "trigger_region":
+            if path:
+                return _path_step(path, target_affordance["label"])
+            return _step_toward_region(snapshot, target_affordance)
+        if target_affordance["kind"] == "object":
+            if path:
+                return _path_step(path, target_affordance["label"])
+            return _step_toward_object(snapshot, planner_state, target_affordance)
+        if target_affordance["kind"] == "bg_event":
+            if path:
+                return _path_step(path, target_affordance["label"])
+            return _step_toward_point(snapshot, planner_state, target_affordance, exact=False)
+
+    if objective is None:
+        return _fallback_exploration(snapshot, planner_state)
     path = _path_to_objective(snapshot, objective, map_info=map_info, map_catalog=map_catalog)
 
     if objective["kind"] == "warp":
@@ -150,6 +184,18 @@ def choose_field_action(
         return _step_toward_object(snapshot, planner_state, objective)
 
     return _fallback_exploration(snapshot, planner_state)
+
+
+def _resolve_target_affordance(snapshot: dict[str, Any], preferred_affordance_id: str | None) -> dict[str, Any] | None:
+    navigation = snapshot.get("navigation") or {}
+    if preferred_affordance_id:
+        for affordance in navigation.get("ranked_affordances", []) or []:
+            if affordance["id"] == preferred_affordance_id:
+                return affordance
+        for affordance in navigation.get("affordances", []) or []:
+            if affordance["id"] == preferred_affordance_id:
+                return affordance
+    return navigation.get("target_affordance")
 
 
 def update_navigation_state(

@@ -14,18 +14,29 @@ class CodexAppServerError(RuntimeError):
     pass
 
 
-def _runtime_tool_spec(name: str, description: str) -> dict[str, Any]:
+def _runtime_tool_spec(
+    name: str,
+    description: str,
+    *,
+    supports_affordance_id: bool = False,
+) -> dict[str, Any]:
+    properties: dict[str, Any] = {
+        "reason": {
+            "type": "string",
+            "description": "Short explanation for why this tool was chosen in the current game state.",
+        }
+    }
+    if supports_affordance_id:
+        properties["affordance_id"] = {
+            "type": "string",
+            "description": "Optional affordance id from the current ranked affordance list when you want to pursue a specific target.",
+        }
     return {
         "name": name,
         "description": description,
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "reason": {
-                    "type": "string",
-                    "description": "Short explanation for why this tool was chosen in the current game state.",
-                }
-            },
+            "properties": properties,
             "additionalProperties": False,
         },
     }
@@ -40,6 +51,11 @@ RUNTIME_DYNAMIC_TOOLS: list[dict[str, Any]] = [
     _runtime_tool_spec("move_down", "Attempt to move or navigate downward by one step."),
     _runtime_tool_spec("move_left", "Attempt to move or navigate left by one step."),
     _runtime_tool_spec("move_right", "Attempt to move or navigate right by one step."),
+    _runtime_tool_spec(
+        "follow_target",
+        "Let the runtime pursue a specific affordance target for several verified steps. Pass affordance_id from the current ranked affordance list to choose explicitly.",
+        supports_affordance_id=True,
+    ),
     _runtime_tool_spec("follow_objective", "Let the runtime follow the current navigation objective for several verified steps."),
     _runtime_tool_spec("follow_interaction", "Let the runtime resolve the current dialogue, menu, naming, or battle interaction for several verified steps."),
     _runtime_tool_spec("wait_short", "Wait briefly for scripted movement, transitions, or text to update."),
@@ -166,14 +182,18 @@ class CodexAppServerClient:
                 "reason": {
                     "type": "string",
                 },
+                "affordance_id": {
+                    "type": ["string", "null"],
+                },
             },
-            "required": ["action", "reason"],
+            "required": ["action", "reason", "affordance_id"],
             "additionalProperties": False,
         }
         prompt = (
             f"{context['prompt']}\n"
             "Use the provided runtime tools to interact with the game instead of describing an action in prose. "
             "Prefer exactly one tool call per turn. If a tool reports it is invalid for the current state, choose a different tool. "
+            "If you want to steer overworld exploration yourself, use follow_target with an affordance_id from the ranked affordances in the structured context. "
             "After acting, return the JSON object only."
         )
         response = self.request(
@@ -220,6 +240,8 @@ class CodexAppServerClient:
                 "action": tool_record["action"],
                 "reason": tool_record.get("reason") or "Executed via runtime tool call.",
             }
+            if tool_record and tool_record.get("affordance_id"):
+                decision["affordance_id"] = tool_record["affordance_id"]
         else:
             raise CodexAppServerError(
                 f"Turn '{turn_id}' completed without a tool call or agent message. "
@@ -231,6 +253,8 @@ class CodexAppServerClient:
                 "action": tool_record["action"],
                 "reason": decision["reason"],
             }
+            if tool_record.get("affordance_id"):
+                decision["affordance_id"] = tool_record["affordance_id"]
         return {
             "decision": decision,
             "thread_id": self._require_thread_id(),
@@ -406,7 +430,7 @@ class CodexAppServerClient:
             summary["item_id"] = item.get("id")
         return summary
 
-    def _parse_agent_decision(self, text: str, allowed_ids: list[str]) -> dict[str, str]:
+    def _parse_agent_decision(self, text: str, allowed_ids: list[str]) -> dict[str, Any]:
         normalized = text.strip()
         if normalized.startswith("```"):
             lines = normalized.splitlines()
@@ -424,9 +448,13 @@ class CodexAppServerClient:
             raise CodexAppServerError(f"Agent chose invalid action '{action}'. Allowed: {allowed}")
         if not isinstance(reason, str) or not reason.strip():
             raise CodexAppServerError(f"Agent returned invalid reason payload: {payload}")
+        affordance_id = payload.get("affordance_id")
+        if affordance_id is not None and not isinstance(affordance_id, str):
+            raise CodexAppServerError(f"Agent returned invalid affordance_id payload: {payload}")
         return {
             "action": action,
             "reason": reason.strip(),
+            "affordance_id": affordance_id,
         }
 
     def _next_request_id(self) -> int:
