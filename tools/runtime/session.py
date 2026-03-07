@@ -66,6 +66,10 @@ class RuntimeSession:
         self._planner_state = {
             "oak_intro_active": False,
             "field_move_index": 0,
+            "starter_preference": "SQUIRTLE",
+            "nickname_policy": "decline",
+            "player_name": "RED",
+            "rival_name": "BLUE",
         }
         self._navigation_state = self._fresh_navigation_state()
 
@@ -169,6 +173,7 @@ class RuntimeSession:
                 after,
                 map_catalog=self.map_catalog,
                 navigation_state=self._navigation_state,
+                planner_state=self._planner_state,
             )
             if record_trace:
                 trace = self._build_action_trace(
@@ -209,6 +214,7 @@ class RuntimeSession:
                     after,
                     map_catalog=self.map_catalog,
                     navigation_state=self._navigation_state,
+                    planner_state=self._planner_state,
                 )
                 trace = self._build_action_trace(
                     kind="sequence_step",
@@ -305,6 +311,50 @@ class RuntimeSession:
         macro_trace = {
             "timestamp": self._timestamp(),
             "kind": "follow_objective",
+            "max_steps": max_steps,
+            "before": self._trace_state(initial_snapshot),
+            "after": self._trace_state(snapshot),
+            "steps": steps,
+        }
+        self._record_trace(macro_trace)
+        snapshot["macro_trace"] = macro_trace
+        return snapshot
+
+    def follow_interaction(self, max_steps: int = 6) -> dict:
+        steps: list[dict] = []
+        initial_snapshot = self.telemetry()
+        snapshot = initial_snapshot
+
+        for _ in range(max_steps):
+            interaction_type = snapshot.get("interaction", {}).get("type")
+            if interaction_type in {None, "field"}:
+                break
+
+            decision = self._choose_interaction_action(snapshot)
+            if decision["type"] == "routine":
+                snapshot = self.run_routine(decision["name"])
+            elif decision["type"] == "action":
+                snapshot = self.tap(decision["button"])
+            elif decision["type"] == "tick":
+                snapshot = self.tick(decision["frames"])
+            else:
+                break
+
+            steps.append(
+                {
+                    "decision": decision,
+                    "after": self._trace_state(snapshot),
+                }
+            )
+            next_interaction = snapshot.get("interaction", {}).get("type")
+            if next_interaction in {None, "field"}:
+                break
+            if next_interaction != interaction_type:
+                break
+
+        macro_trace = {
+            "timestamp": self._timestamp(),
+            "kind": "follow_interaction",
             "max_steps": max_steps,
             "before": self._trace_state(initial_snapshot),
             "after": self._trace_state(snapshot),
@@ -469,6 +519,8 @@ class RuntimeSession:
             result = self.run_routine(action["name"])
         elif action_type == "macro" and action["name"] == "follow_objective":
             result = self.follow_objective()
+        elif action_type == "macro" and action["name"] == "follow_interaction":
+            result = self.follow_interaction()
         elif action_type == "tick":
             result = self.tick(action["frames"])
         elif action_type == "save_state":
@@ -539,6 +591,10 @@ class RuntimeSession:
         if goal != "progress":
             raise ValueError(f"Unsupported planner goal '{goal}'")
 
+        interaction_type = snapshot.get("interaction", {}).get("type")
+        if interaction_type and interaction_type != "field":
+            return self._choose_interaction_action(snapshot)
+
         mode = snapshot["mode"]
         if mode == "menu_dialogue":
             return self._choose_menu_action(snapshot, allow_dialogue_fallback=True)
@@ -553,15 +609,40 @@ class RuntimeSession:
         if mode == "field":
             return self._choose_field_action(snapshot)
         if mode == "battle":
-            return {
-                "type": "routine",
-                "name": "advance_dialogue",
-                "reason": "Battle handling is not specialized yet, so advance the prompt with A.",
-            }
+            return self._choose_battle_action(snapshot)
         return {
             "type": "tick",
             "frames": 10,
             "reason": "Wait through transition/loading frames before deciding again.",
+        }
+
+    def _choose_interaction_action(self, snapshot: dict) -> dict:
+        interaction = snapshot.get("interaction", {})
+        interaction_type = interaction.get("type")
+        if interaction_type in {"dialogue", "battle_dialogue"}:
+            return {
+                "type": "routine",
+                "name": "advance_dialogue",
+                "reason": "Visible dialogue is active, so advance it with A.",
+            }
+        if interaction_type == "binary_choice":
+            return self._choose_binary_choice_action(snapshot)
+        if interaction_type == "text_entry":
+            return self._choose_text_entry_action(snapshot)
+        if interaction_type == "battle_command_menu" or interaction_type == "battle_move_menu":
+            return self._choose_battle_action(snapshot)
+        if interaction_type in {"list_choice", "menu_dialogue"}:
+            return self._choose_menu_action(snapshot, allow_dialogue_fallback=True)
+        if interaction_type == "battle_transition":
+            return {
+                "type": "tick",
+                "frames": 20,
+                "reason": "Battle state is transitioning; wait briefly for the next stable input window.",
+            }
+        return {
+            "type": "tick",
+            "frames": 10,
+            "reason": "Interaction state is ambiguous, so re-observe briefly.",
         }
 
     def _choose_field_action(self, snapshot: dict) -> dict:
@@ -572,18 +653,12 @@ class RuntimeSession:
                 "name": "advance_dialogue",
                 "reason": "A dialogue box is visible, so continue it with A instead of treating the scene as free movement.",
             }
-        if self._planner_state["oak_intro_active"]:
-            return {
-                "type": "routine",
-                "name": "advance_dialogue",
-                "reason": "Oak intro is still active, so continue the hidden prompt chain with A.",
-            }
 
         if "dialogue_closed" in recent_event_types or "menu_closed" in recent_event_types:
             return {
                 "type": "tick",
-                "frames": 60,
-                "reason": "A script-driven dialogue or menu just closed, so wait for the next scene state.",
+                "frames": 20,
+                "reason": "A script-driven dialogue or menu just closed, so wait briefly for the next stable field state.",
             }
         return choose_field_action(
             snapshot,
@@ -714,7 +789,7 @@ class RuntimeSession:
         current_index = snapshot["menu"]["selected_index"]
         dialogue_lines = snapshot["dialogue"]["visible_lines"]
 
-        target_label = self._select_menu_target(visible_items, dialogue_lines)
+        target_label = self._select_menu_target(snapshot)
         if target_label is not None:
             target_index = visible_items.index(target_label)
             if current_index is None or current_index == target_index:
@@ -762,31 +837,220 @@ class RuntimeSession:
             "reason": "Menu is open without a clear target, so close it.",
         }
 
-    def _select_menu_target(self, visible_items: list[str], dialogue_lines: list[str]) -> str | None:
+    def _select_menu_target(self, snapshot: dict) -> str | None:
+        visible_items = snapshot["menu"]["visible_items"]
         if not visible_items:
             return None
 
+        dialogue_lines = snapshot["dialogue"]["visible_lines"]
         normalized_dialogue = " ".join(dialogue_lines).lower()
         upper_items = {item.upper(): item for item in visible_items}
+        preferred_binary = self._determine_binary_choice(snapshot)
+        if preferred_binary and preferred_binary in upper_items:
+            return upper_items[preferred_binary]
 
         if "your name" in normalized_dialogue:
-            for candidate in ("BLUE", "RED", "ASH", "JACK", "NEW NAME"):
-                if candidate in upper_items:
-                    return upper_items[candidate]
+            preferred_name = self._planner_state["player_name"].upper()
+            if preferred_name in upper_items:
+                return upper_items[preferred_name]
+            if "NEW NAME" in upper_items:
+                return upper_items["NEW NAME"]
 
         if "his name" in normalized_dialogue or "rival" in normalized_dialogue:
-            for candidate in ("GARY", "SONY", "JOHN", "JACK", "ASH", "NEW NAME"):
-                if candidate in upper_items:
-                    return upper_items[candidate]
-
-        if "yes" in upper_items and "no" in upper_items:
-            return upper_items["YES"]
+            preferred_name = self._planner_state["rival_name"].upper()
+            if preferred_name in upper_items:
+                return upper_items[preferred_name]
+            if "NEW NAME" in upper_items:
+                return upper_items["NEW NAME"]
 
         for candidate in ("CANCEL", "EXIT"):
             if candidate in upper_items:
                 return upper_items[candidate]
 
         return None
+
+    def _choose_binary_choice_action(self, snapshot: dict) -> dict:
+        visible_items = snapshot["menu"]["visible_items"]
+        current_index = snapshot["menu"]["selected_index"]
+        preferred = self._determine_binary_choice(snapshot) or "YES"
+        upper_items = {item.upper(): index for index, item in enumerate(visible_items)}
+        target_index = upper_items.get(preferred)
+        if target_index is None:
+            return {
+                "type": "routine",
+                "name": "advance_dialogue",
+                "reason": "A binary choice is visible and the preferred option is already implied, so confirm it.",
+            }
+        if current_index is None or current_index == target_index:
+            return {
+                "type": "routine",
+                "name": "advance_dialogue",
+                "reason": f"Choose {preferred} for the current prompt.",
+            }
+        if current_index > target_index:
+            return {
+                "type": "routine",
+                "name": "move_up",
+                "reason": f"Move the binary-choice cursor toward {preferred}.",
+            }
+        return {
+            "type": "routine",
+            "name": "move_down",
+            "reason": f"Move the binary-choice cursor toward {preferred}.",
+        }
+
+    def _determine_binary_choice(self, snapshot: dict) -> str | None:
+        prompt = ((snapshot.get("interaction") or {}).get("prompt") or "").lower()
+        if not prompt:
+            prompt = " ".join(snapshot["dialogue"]["visible_lines"]).lower()
+
+        if "nickname" in prompt:
+            return "NO" if self._planner_state["nickname_policy"] == "decline" else "YES"
+        if "you want the" in prompt:
+            preferred = self._planner_state["starter_preference"].lower()
+            return "YES" if preferred in prompt else "NO"
+        if "save" in prompt:
+            return "YES"
+        if "sure" in prompt or "okay" in prompt or "ready" in prompt:
+            return "YES"
+        return "YES"
+
+    def _choose_text_entry_action(self, snapshot: dict) -> dict:
+        naming = snapshot["naming"]
+        desired_text = self._desired_name_for_screen(snapshot)
+        current_text = naming["current_text"]
+        if current_text == desired_text:
+            return {
+                "type": "action",
+                "button": "start",
+                "reason": f"The desired name '{desired_text}' is already entered, so submit it with Start.",
+            }
+        if not desired_text.startswith(current_text):
+            return {
+                "type": "action",
+                "button": "b",
+                "reason": f"Backspace to realign the current name with the desired target '{desired_text}'.",
+            }
+
+        next_char = desired_text[len(current_text)]
+        target_position = self._find_naming_character(snapshot, next_char)
+        if target_position is None:
+            return {
+                "type": "tick",
+                "frames": 10,
+                "reason": f"Wait briefly because the naming keyboard could not locate '{next_char}'.",
+            }
+
+        current_row = naming.get("cursor_row")
+        current_col = naming.get("cursor_col")
+        target_row, target_col = target_position
+        if current_row is None or current_col is None:
+            return {
+                "type": "tick",
+                "frames": 10,
+                "reason": "Wait briefly because the naming cursor position is not yet stable.",
+            }
+        if current_row > target_row:
+            return {"type": "routine", "name": "move_up", "reason": f"Move naming cursor up toward '{next_char}'."}
+        if current_row < target_row:
+            return {"type": "routine", "name": "move_down", "reason": f"Move naming cursor down toward '{next_char}'."}
+        if current_col > target_col:
+            return {"type": "routine", "name": "move_left", "reason": f"Move naming cursor left toward '{next_char}'."}
+        if current_col < target_col:
+            return {"type": "routine", "name": "move_right", "reason": f"Move naming cursor right toward '{next_char}'."}
+        return {
+            "type": "routine",
+            "name": "advance_dialogue",
+            "reason": f"Select '{next_char}' on the naming keyboard.",
+        }
+
+    def _desired_name_for_screen(self, snapshot: dict) -> str:
+        naming = snapshot["naming"]
+        screen_type = naming.get("screen_type")
+        if screen_type == "player":
+            return self._planner_state["player_name"]
+        if screen_type == "rival":
+            return self._planner_state["rival_name"]
+        base_name = naming.get("base_name") or "MON"
+        if self._planner_state["nickname_policy"] == "decline":
+            return base_name
+        return base_name
+
+    def _find_naming_character(self, snapshot: dict, target_char: str) -> tuple[int, int] | None:
+        keyboard_rows = snapshot["naming"].get("keyboard_rows") or []
+        for row_index, row in enumerate(keyboard_rows[:5]):
+            for col_index, char in enumerate(row):
+                if char == target_char:
+                    return row_index, col_index
+        return None
+
+    def _choose_battle_action(self, snapshot: dict) -> dict:
+        battle = snapshot["battle"]
+        if battle["ui_state"] == "dialogue":
+            return {
+                "type": "routine",
+                "name": "advance_dialogue",
+                "reason": "Visible battle dialogue is active, so advance it with A.",
+            }
+        if battle["ui_state"] == "command_menu":
+            selected = battle["command_menu"]["selected_command"]
+            if selected == "FIGHT":
+                return {
+                    "type": "routine",
+                    "name": "advance_dialogue",
+                    "reason": "The FIGHT command is selected, so confirm it.",
+                }
+            command_positions = {
+                "FIGHT": 0,
+                "PKMN": 1,
+                "ITEM": 2,
+                "RUN": 3,
+            }
+            selected_index = battle["command_menu"]["selected_index"]
+            target_index = command_positions["FIGHT"]
+            if selected_index is None:
+                return {
+                    "type": "routine",
+                    "name": "advance_dialogue",
+                    "reason": "The battle command menu is visible; try confirming the default command.",
+                }
+            if selected_index in {1, 3} and target_index in {0, 2}:
+                return {"type": "routine", "name": "move_up", "reason": "Move the battle cursor toward FIGHT."}
+            if selected_index in {2, 3} and target_index in {0, 1}:
+                return {"type": "routine", "name": "move_left", "reason": "Move the battle cursor toward FIGHT."}
+            if selected_index == 0:
+                return {"type": "routine", "name": "advance_dialogue", "reason": "Confirm FIGHT."}
+        if battle["ui_state"] == "move_menu":
+            moves = battle["move_menu"]["moves"]
+            if not moves:
+                return {
+                    "type": "tick",
+                    "frames": 10,
+                    "reason": "The move menu is visible but the available moves are not parsed yet.",
+                }
+            preferred = max(
+                moves,
+                key=lambda move: (
+                    1 if move["pp"] > 0 else 0,
+                    move["power"],
+                    move["accuracy"] or 0,
+                ),
+            )
+            selected_index = battle["move_menu"]["selected_index"]
+            if selected_index is None or selected_index == preferred["slot"]:
+                return {
+                    "type": "routine",
+                    "name": "advance_dialogue",
+                    "reason": f"Use {preferred['name']} because it is the strongest available move with PP remaining.",
+                }
+            if selected_index > preferred["slot"]:
+                return {"type": "routine", "name": "move_up", "reason": f"Move the battle cursor toward {preferred['name']}."}
+            return {"type": "routine", "name": "move_down", "reason": f"Move the battle cursor toward {preferred['name']}."}
+        return {
+            "type": "tick",
+            "frames": 10,
+            "reason": "Battle state is in transition, so wait for the next clear prompt.",
+        }
 
     def _update_planner_state(self, snapshot: dict) -> None:
         dialogue = " ".join(snapshot["dialogue"]["visible_lines"]).lower()
@@ -946,6 +1210,7 @@ class RuntimeSession:
             snapshot,
             map_catalog=self.map_catalog,
             navigation_state=self._navigation_state,
+            planner_state=self._planner_state,
         )
         return snapshot
 

@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .game_data import DEFAULT_MOVE_CATALOG
 from .navigator import decode_player_direction
 from .symbols import SymbolTable
 from .tilemap import (
     DEFAULT_CHARMAP,
     MESSAGE_BOX,
+    clean_ui_text,
     decode_tilemap_cells,
     decode_tilemap_rows,
+    decode_text_bytes,
     extract_box_lines,
     extract_menu_state,
     is_box_present,
@@ -30,6 +33,28 @@ SYMBOL_NAMES = (
     "wIsInBattle",
     "wCurOpponent",
     "wBattleType",
+    "wMoveMenuType",
+    "wPlayerMoveListIndex",
+    "wPlayerSelectedMove",
+    "wBattleMenuCurrentPP",
+    "wPlayerMovePower",
+    "wPlayerMoveType",
+    "wPlayerMoveAccuracy",
+    "wPlayerMoveMaxPP",
+    "wBattleMonNick",
+    "wBattleMonHP",
+    "wBattleMonMaxHP",
+    "wBattleMonLevel",
+    "wBattleMonMoves",
+    "wBattleMonPP",
+    "wBattleMonStatus",
+    "wEnemyMonNick",
+    "wEnemyMonHP",
+    "wEnemyMonMaxHP",
+    "wEnemyMonLevel",
+    "wEnemyMonMoves",
+    "wEnemyMonPP",
+    "wEnemyMonStatus",
     "wCurMap",
     "wCurMapScript",
     "wCurMapWidth",
@@ -41,6 +66,15 @@ SYMBOL_NAMES = (
     "wPlayerMovingDirection",
     "wPlayerLastStopDirection",
     "wPlayerDirection",
+    "wNameBuffer",
+    "wStringBuffer",
+    "wNamingScreenType",
+    "wNamingScreenNameLength",
+    "wNamingScreenSubmitName",
+    "wNamingScreenLetter",
+    "wPlayerStarter",
+    "wRivalStarter",
+    "wCurPartySpecies",
     "hJoyReleased",
     "hJoyPressed",
     "hJoyHeld",
@@ -66,6 +100,255 @@ def _blank_ratio(decoded_rows: list[str]) -> float:
         return 1.0
     blank_tiles = sum(ch == " " for row in decoded_rows for ch in row)
     return blank_tiles / total_tiles
+
+
+def _read_u16_be(mem, address: int) -> int:
+    return (mem[address] << 8) | mem[address + 1]
+
+
+def _decode_ram_text(mem, address: int, length: int) -> str:
+    values = [mem[address + offset] for offset in range(length)]
+    return decode_text_bytes(values, DEFAULT_CHARMAP)
+
+
+def _build_battle_state(
+    mem,
+    addresses: TelemetryAddresses,
+    *,
+    decoded_rows: list[str],
+    decoded_cells: list[list[str]],
+    message_box_present: bool,
+    dialogue_lines: list[str],
+    menu_item: int,
+) -> dict:
+    in_battle = mem[addresses["wIsInBattle"]] != 0
+    player_move_ids = [
+        mem[addresses["wBattleMonMoves"] + index]
+        for index in range(4)
+    ]
+    player_move_pp = [
+        mem[addresses["wBattleMonPP"] + index] & 0x3F
+        for index in range(4)
+    ]
+    player_moves = []
+    for index, move_id in enumerate(player_move_ids):
+        if move_id == 0:
+            continue
+        info = DEFAULT_MOVE_CATALOG.get(move_id)
+        player_moves.append(
+            {
+                "slot": index,
+                "move_id": move_id,
+                "name": info.name if info else f"MOVE_{move_id}",
+                "power": info.power if info else 0,
+                "type_name": info.type_name if info else "UNKNOWN",
+                "accuracy": info.accuracy if info else None,
+                "pp": player_move_pp[index],
+                "max_pp": info.pp if info else None,
+            }
+        )
+
+    battle_rows = decoded_rows[12:18]
+    battle_text = " ".join(clean_ui_text(row) for row in battle_rows).upper()
+    command_labels = ["FIGHT", "PKMN", "ITEM", "RUN"]
+    command_menu_visible = (
+        not message_box_present
+        and "FIGHT" in battle_text
+        and "RUN" in battle_text
+    )
+    move_menu_visible = (
+        not message_box_present
+        and bool(player_moves)
+        and any(move["name"] in battle_text for move in player_moves)
+    )
+    if message_box_present or dialogue_lines:
+        ui_state = "dialogue"
+    elif move_menu_visible:
+        ui_state = "move_menu"
+    elif command_menu_visible:
+        ui_state = "command_menu"
+    elif in_battle:
+        ui_state = "transition"
+    else:
+        ui_state = "none"
+
+    selected_command_index = menu_item if command_menu_visible and 0 <= menu_item < len(command_labels) else None
+    selected_move_index = menu_item - 1 if move_menu_visible and 1 <= menu_item <= 4 else None
+    if selected_move_index is not None and selected_move_index >= len(player_moves):
+        selected_move_index = None
+
+    return {
+        "in_battle": in_battle,
+        "type": mem[addresses["wBattleType"]],
+        "opponent": mem[addresses["wCurOpponent"]],
+        "ui_state": ui_state,
+        "command_menu": {
+            "visible": command_menu_visible,
+            "commands": command_labels if command_menu_visible else [],
+            "selected_index": selected_command_index,
+            "selected_command": (
+                command_labels[selected_command_index]
+                if selected_command_index is not None
+                else None
+            ),
+        },
+        "move_menu": {
+            "visible": move_menu_visible,
+            "moves": player_moves,
+            "selected_index": selected_move_index,
+            "selected_move": (
+                player_moves[selected_move_index]
+                if selected_move_index is not None
+                else None
+            ),
+            "menu_type": mem[addresses["wMoveMenuType"]],
+            "selected_move_id": mem[addresses["wPlayerSelectedMove"]],
+            "selected_move_slot": mem[addresses["wPlayerMoveListIndex"]],
+            "current_pp": mem[addresses["wBattleMenuCurrentPP"]] & 0x3F,
+            "current_move_power": mem[addresses["wPlayerMovePower"]],
+            "current_move_type": mem[addresses["wPlayerMoveType"]],
+            "current_move_accuracy": mem[addresses["wPlayerMoveAccuracy"]],
+            "current_move_max_pp": mem[addresses["wPlayerMoveMaxPP"]],
+        },
+        "player": {
+            "nickname": _decode_ram_text(mem, addresses["wBattleMonNick"], 11),
+            "hp": _read_u16_be(mem, addresses["wBattleMonHP"]),
+            "max_hp": _read_u16_be(mem, addresses["wBattleMonMaxHP"]),
+            "level": mem[addresses["wBattleMonLevel"]],
+            "status": mem[addresses["wBattleMonStatus"]],
+        },
+        "enemy": {
+            "nickname": _decode_ram_text(mem, addresses["wEnemyMonNick"], 11),
+            "hp": _read_u16_be(mem, addresses["wEnemyMonHP"]),
+            "max_hp": _read_u16_be(mem, addresses["wEnemyMonMaxHP"]),
+            "level": mem[addresses["wEnemyMonLevel"]],
+            "status": mem[addresses["wEnemyMonStatus"]],
+        },
+    }
+
+
+def _build_naming_state(
+    mem,
+    addresses: TelemetryAddresses,
+    *,
+    decoded_cells: list[list[str]],
+    decoded_rows: list[str],
+    top_menu_x: int,
+    menu_item: int,
+    max_menu_item: int,
+) -> dict:
+    prompt_rows = [clean_ui_text(row) for row in decoded_rows[:5] if "NAME?" in row or "NICKNAME?" in row]
+    keyboard_rows = [
+        "".join(decoded_cells[row_index][2:11]).strip()
+        for row_index in range(5, 10)
+        if row_index < len(decoded_cells)
+    ]
+    active = bool(prompt_rows) and max_menu_item == 7 and top_menu_x >= 1
+    if not active:
+        return {
+            "active": False,
+            "screen_type": None,
+            "screen_type_id": None,
+            "prompt": None,
+            "current_text": "",
+            "base_name": "",
+            "current_length": 0,
+            "submit_pending": False,
+            "current_letter": "",
+            "cursor_row": None,
+            "cursor_col": None,
+            "keyboard_rows": [],
+        }
+    screen_type_id = mem[addresses["wNamingScreenType"]]
+    screen_type = {
+        0: "player",
+        1: "rival",
+        2: "pokemon",
+    }.get(screen_type_id, "unknown")
+    cursor_row = menu_item - 1 if 1 <= menu_item <= 6 else None
+    cursor_col = (top_menu_x - 1) // 2 if cursor_row is not None else None
+    return {
+        "active": active,
+        "screen_type": screen_type,
+        "screen_type_id": screen_type_id,
+        "prompt": " ".join(prompt_rows).strip() or None,
+        "current_text": _decode_ram_text(mem, addresses["wStringBuffer"], 11),
+        "base_name": _decode_ram_text(mem, addresses["wNameBuffer"], 11),
+        "current_length": mem[addresses["wNamingScreenNameLength"]],
+        "submit_pending": mem[addresses["wNamingScreenSubmitName"]] != 0,
+        "current_letter": decode_text_bytes([mem[addresses["wNamingScreenLetter"]]], DEFAULT_CHARMAP),
+        "cursor_row": cursor_row,
+        "cursor_col": cursor_col,
+        "keyboard_rows": keyboard_rows,
+    }
+
+
+def _build_interaction_state(snapshot: dict) -> dict:
+    dialogue_active = snapshot["dialogue"]["active"] or snapshot["screen"]["message_box_present"]
+    menu = snapshot["menu"]
+    battle = snapshot["battle"]
+    naming = snapshot["naming"]
+    dialogue_text = " ".join(snapshot["dialogue"]["visible_lines"]).strip()
+
+    if naming["active"]:
+        return {
+            "type": "text_entry",
+            "prompt": naming["prompt"],
+            "details": {
+                "screen_type": naming["screen_type"],
+                "current_text": naming["current_text"],
+                "submit_pending": naming["submit_pending"],
+            },
+        }
+    if battle["in_battle"]:
+        if battle["ui_state"] == "dialogue":
+            return {"type": "battle_dialogue", "prompt": dialogue_text or None, "details": {}}
+        if battle["ui_state"] == "move_menu":
+            return {
+                "type": "battle_move_menu",
+                "prompt": dialogue_text or None,
+                "details": {
+                    "selected_move": battle["move_menu"]["selected_move"],
+                    "moves": battle["move_menu"]["moves"],
+                },
+            }
+        if battle["ui_state"] == "command_menu":
+            return {
+                "type": "battle_command_menu",
+                "prompt": dialogue_text or None,
+                "details": {
+                    "selected_command": battle["command_menu"]["selected_command"],
+                    "commands": battle["command_menu"]["commands"],
+                },
+            }
+        return {"type": "battle_transition", "prompt": dialogue_text or None, "details": {}}
+    if menu["active"] and {"YES", "NO"}.issubset({item.upper() for item in menu["visible_items"]}):
+        return {
+            "type": "binary_choice",
+            "prompt": dialogue_text or None,
+            "details": {
+                "visible_items": menu["visible_items"],
+                "selected_item_text": menu["selected_item_text"],
+            },
+        }
+    if menu["active"]:
+        return {
+            "type": "list_choice",
+            "prompt": dialogue_text or None,
+            "details": {
+                "visible_items": menu["visible_items"],
+                "selected_item_text": menu["selected_item_text"],
+            },
+        }
+    if dialogue_active:
+        return {
+            "type": "dialogue",
+            "prompt": dialogue_text or None,
+            "details": {
+                "prompt_visible": any("▼" in row or "▶" in row or "▷" in row for row in snapshot["screen"]["decoded_rows"][12:18]),
+            },
+        }
+    return {"type": "field", "prompt": None, "details": {}}
 
 
 def derive_events(previous: dict | None, current: dict) -> list[dict]:
@@ -232,8 +515,28 @@ def build_telemetry(pyboy, addresses: TelemetryAddresses) -> dict:
         selected_menu_line = menu_state.items[menu_state.selected_index]
 
     blank_ratio = _blank_ratio(decoded_rows)
+    battle_state = _build_battle_state(
+        mem,
+        addresses,
+        decoded_rows=decoded_rows,
+        decoded_cells=decoded_cells,
+        message_box_present=message_box_present,
+        dialogue_lines=dialogue_lines,
+        menu_item=menu_item,
+    )
+    naming_state = _build_naming_state(
+        mem,
+        addresses,
+        decoded_cells=decoded_cells,
+        decoded_rows=decoded_rows,
+        top_menu_x=top_menu_x,
+        menu_item=menu_item,
+        max_menu_item=max_menu_item,
+    )
     if in_battle:
         mode = "battle"
+    elif naming_state["active"]:
+        mode = "naming"
     elif message_box_present and menu_state.active:
         mode = "menu_dialogue"
     elif message_box_present:
@@ -245,7 +548,7 @@ def build_telemetry(pyboy, addresses: TelemetryAddresses) -> dict:
     else:
         mode = "field"
 
-    return {
+    snapshot = {
         "frame": pyboy.frame_count,
         "mode": mode,
         "map": {
@@ -281,11 +584,13 @@ def build_telemetry(pyboy, addresses: TelemetryAddresses) -> dict:
             "visible_items": menu_state.items,
             "selected_item_text": selected_menu_line,
         },
-        "battle": {
-            "in_battle": in_battle,
-            "type": mem[addresses["wBattleType"]],
-            "opponent": mem[addresses["wCurOpponent"]],
+        "battle": battle_state,
+        "party": {
+            "current_species": mem[addresses["wCurPartySpecies"]],
+            "player_starter": mem[addresses["wPlayerStarter"]],
+            "rival_starter": mem[addresses["wRivalStarter"]],
         },
+        "naming": naming_state,
         "input": {
             "input": mem[addresses["hJoyInput"]],
             "held": mem[addresses["hJoyHeld"]],
@@ -308,3 +613,5 @@ def build_telemetry(pyboy, addresses: TelemetryAddresses) -> dict:
             "source": dialogue_source,
         },
     }
+    snapshot["interaction"] = _build_interaction_state(snapshot)
+    return snapshot

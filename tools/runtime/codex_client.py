@@ -41,6 +41,7 @@ RUNTIME_DYNAMIC_TOOLS: list[dict[str, Any]] = [
     _runtime_tool_spec("move_left", "Attempt to move or navigate left by one step."),
     _runtime_tool_spec("move_right", "Attempt to move or navigate right by one step."),
     _runtime_tool_spec("follow_objective", "Let the runtime follow the current navigation objective for several verified steps."),
+    _runtime_tool_spec("follow_interaction", "Let the runtime resolve the current dialogue, menu, naming, or battle interaction for several verified steps."),
     _runtime_tool_spec("wait_short", "Wait briefly for scripted movement, transitions, or text to update."),
     _runtime_tool_spec("save_quick", "Save the current quick checkpoint."),
     _runtime_tool_spec("load_quick", "Load the current quick checkpoint."),

@@ -83,6 +83,18 @@ def decode_tilemap_cells(tilemap_rows: list[list[int]], charmap: Charmap) -> lis
     return [[charmap.decode_byte(value) for value in row] for row in tilemap_rows]
 
 
+def decode_text_bytes(values: list[int], charmap: Charmap | None = None) -> str:
+    if charmap is None:
+        charmap = DEFAULT_CHARMAP
+    decoded: list[str] = []
+    for value in values:
+        token = charmap.decode_byte(value)
+        if token == "":
+            break
+        decoded.append(token)
+    return clean_ui_text("".join(decoded))
+
+
 def clean_ui_text(text: str) -> str:
     return text.rstrip(" ▼▶▷▲").strip()
 

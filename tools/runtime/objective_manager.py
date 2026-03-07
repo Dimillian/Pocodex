@@ -10,6 +10,7 @@ MILESTONE_ORDER = {
     "intro.trigger_oak": 30,
     "intro.follow_oak": 40,
     "lab.progress_with_oak": 50,
+    "lab.choose_starter": 55,
     "lab.stay_near_table": 60,
 }
 
@@ -92,6 +93,7 @@ def build_current_objective(
     map_info: MapInfo | None,
     map_catalog: MapCatalog,
     affordances: list[dict[str, Any]],
+    planner_state: dict[str, Any],
 ) -> dict[str, Any] | None:
     if map_info is None:
         return None
@@ -144,6 +146,28 @@ def build_current_objective(
         )
 
     if const_name == "OAKS_LAB":
+        preferred_starter = (planner_state.get("starter_preference") or "SQUIRTLE").upper()
+        starter_text_ref = {
+            "CHARMANDER": "TEXT_OAKSLAB_CHARMANDER_POKE_BALL",
+            "SQUIRTLE": "TEXT_OAKSLAB_SQUIRTLE_POKE_BALL",
+            "BULBASAUR": "TEXT_OAKSLAB_BULBASAUR_POKE_BALL",
+        }.get(preferred_starter, "TEXT_OAKSLAB_SQUIRTLE_POKE_BALL")
+        if snapshot["party"]["player_starter"] == 0 and snapshot["map"]["script"] in {6, 7}:
+            if snapshot["map"]["y"] >= 6:
+                return _objective_from_affordance(
+                    affordances,
+                    "trigger_region",
+                    lambda affordance: affordance.get("source_label") == "OaksLabPlayerDontGoAwayScript",
+                    milestone="lab.stay_near_table",
+                    label="Stay close to Oak's table while choosing a starter.",
+                )
+            return _objective_from_affordance(
+                affordances,
+                "object",
+                lambda affordance: affordance.get("text_ref") == starter_text_ref,
+                milestone="lab.choose_starter",
+                label=f"Choose {preferred_starter.title()} from Oak's table.",
+            )
         if snapshot["map"]["script"] in {6, 7}:
             return _objective_from_affordance(
                 affordances,

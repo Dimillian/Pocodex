@@ -31,6 +31,7 @@ def enrich_snapshot_with_navigation(
     *,
     map_catalog: MapCatalog,
     navigation_state: dict[str, Any],
+    planner_state: dict[str, Any] | None = None,
 ) -> None:
     map_info = map_catalog.get_by_id(snapshot["map"]["id"])
     snapshot["map"]["const_name"] = map_info.const_name if map_info else None
@@ -88,6 +89,7 @@ def enrich_snapshot_with_navigation(
         map_info=map_info,
         map_catalog=map_catalog,
         affordances=affordances,
+        planner_state=planner_state or {},
     )
     snapshot["navigation"] = {
         "objective": objective,

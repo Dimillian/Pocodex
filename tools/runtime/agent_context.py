@@ -30,6 +30,7 @@ def build_agent_context(
         "objective": "Make forward progress in Pokemon Blue one verified action at a time.",
         "observation": {
             "mode": snapshot["mode"],
+            "interaction": snapshot.get("interaction"),
             "map": snapshot["map"],
             "movement": snapshot.get("movement"),
             "navigation": snapshot.get("navigation"),
@@ -37,6 +38,7 @@ def build_agent_context(
                 **snapshot["dialogue"],
                 "context": dialogue_context,
             },
+            "naming": snapshot.get("naming"),
             "menu": {
                 "active": snapshot["menu"]["active"],
                 "visible_items": snapshot["menu"]["visible_items"],
@@ -54,6 +56,7 @@ def build_agent_context(
         "objective": "Make forward progress in Pokemon Blue one verified action at a time.",
         "observation": {
             "mode": snapshot["mode"],
+            "interaction": snapshot.get("interaction"),
             "map": snapshot["map"],
             "movement": snapshot.get("movement"),
             "navigation": snapshot.get("navigation"),
@@ -61,6 +64,7 @@ def build_agent_context(
                 **snapshot["dialogue"],
                 "context": dialogue_context,
             },
+            "naming": snapshot.get("naming"),
             "menu": {
                 "active": snapshot["menu"]["active"],
                 "visible_items": snapshot["menu"]["visible_items"],
@@ -80,7 +84,7 @@ def build_agent_context(
         "allowed_actions": allowed_actions,
         "rules": [
             "Choose exactly one next action from allowed_actions.",
-            "Prefer advancing visible dialogue over guessing movement.",
+            "Prefer resolving the current interaction over guessing movement.",
             "When a menu is visible, navigate or confirm within that menu before moving in the field.",
             "When navigation.objective is present, prefer actions that move toward or interact with that objective.",
             "If movement fails twice in a row, prefer waiting briefly and re-observing before forcing another direction.",
@@ -109,23 +113,37 @@ def build_allowed_actions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
     mode = snapshot["mode"]
+    interaction_type = (snapshot.get("interaction") or {}).get("type")
     dialogue_visible = snapshot["dialogue"]["active"] or snapshot["screen"].get("message_box_present", False)
-    if mode in {"dialogue", "menu_dialogue"} or dialogue_visible:
+    if interaction_type and interaction_type != "field":
+        actions.append(
+            {
+                "id": "follow_interaction",
+                "type": "macro",
+                "name": "follow_interaction",
+                "description": "Let the runtime resolve the current dialogue, choice, naming, or battle interaction for several verified steps.",
+            }
+        )
+    if mode in {"dialogue", "menu_dialogue", "naming"} or dialogue_visible:
         actions.extend(
             [
                 {"id": "press_a", "type": "action", "button": "a", "description": "Advance or confirm the visible dialogue/menu prompt."},
                 {"id": "press_b", "type": "action", "button": "b", "description": "Back out or dismiss the current prompt if needed."},
             ]
         )
-    if mode in {"menu", "menu_dialogue"}:
+    if mode in {"menu", "menu_dialogue", "naming"}:
         actions.extend(
             [
                 {"id": "move_up", "type": "routine", "name": "move_up", "description": "Move the menu cursor up."},
                 {"id": "move_down", "type": "routine", "name": "move_down", "description": "Move the menu cursor down."},
+                {"id": "move_left", "type": "routine", "name": "move_left", "description": "Move the menu cursor left."},
+                {"id": "move_right", "type": "routine", "name": "move_right", "description": "Move the menu cursor right."},
                 {"id": "press_a", "type": "action", "button": "a", "description": "Confirm the selected menu item."},
                 {"id": "press_b", "type": "action", "button": "b", "description": "Back out of the current menu."},
             ]
         )
+        if mode == "naming":
+            actions.append({"id": "press_start", "type": "action", "button": "start", "description": "Submit the current entered name."})
     if mode == "field":
         actions.extend(
             [
@@ -163,10 +181,17 @@ def build_allowed_actions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
 
 def build_heuristic_hint(snapshot: dict[str, Any], planner_state: dict[str, Any]) -> dict[str, Any]:
     mode = snapshot["mode"]
+    interaction = snapshot.get("interaction") or {}
+    interaction_type = interaction.get("type")
     navigation = snapshot.get("navigation") or {}
     objective = navigation.get("objective")
     dialogue_visible = snapshot["dialogue"]["active"] or snapshot["screen"].get("message_box_present", False)
     dialogue_context = build_dialogue_context(snapshot)
+    if interaction_type and interaction_type != "field":
+        return {
+            "action": "follow_interaction",
+            "reason": f"The current interaction is {interaction_type}, so let the runtime resolve it safely.",
+        }
     if dialogue_visible:
         return {
             "action": "press_a",
@@ -194,7 +219,7 @@ def build_heuristic_hint(snapshot: dict[str, Any], planner_state: dict[str, Any]
             return {"action": "follow_objective", "reason": f"Use local navigation to progress toward {objective_label}."}
         return {"action": "move_down", "reason": "Field exploration can probe one move at a time."}
     if mode == "battle":
-        return {"action": "press_a", "reason": "Battle flow is not specialized yet."}
+        return {"action": "follow_interaction", "reason": "Battle interaction is active."}
     return {"action": "wait_short", "reason": "The state appears transitional."}
 
 
@@ -211,6 +236,10 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
     dialogue_context = observation["dialogue"].get("context") or {}
     movement = observation.get("movement") or {}
     navigation = observation.get("navigation") or {}
+    interaction = observation.get("interaction") or {}
+    naming = observation.get("naming") or {}
+    battle = observation.get("battle") or {}
+    selected_move = ((battle.get("move_menu") or {}).get("selected_move") or {}).get("name")
     objective = navigation.get("objective")
     objective_line = "none"
     if objective:
@@ -228,6 +257,7 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
     return (
         "You are choosing the next action for Pokemon Blue.\n"
         f"Current mode: {observation['mode']}\n"
+        f"Interaction type: {interaction.get('type')}\n"
         f"Map: {map_name} (id={observation['map']['id']}) x={observation['map']['x']} y={observation['map']['y']}\n"
         f"Facing: {facing}\n"
         f"Objective: {objective_line}\n"
@@ -239,6 +269,8 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
         f"classification: {dialogue_context.get('classification', 'none')}\n"
         f"Menu items: {menu_line}\n"
         f"Selected menu item: {observation['menu']['selected_item_text']}\n"
+        f"Naming screen: {naming.get('active', False)} type={naming.get('screen_type')} current='{naming.get('current_text')}' base='{naming.get('base_name')}'\n"
+        f"Battle state: ui={battle.get('ui_state')} selected_command={battle.get('command_menu', {}).get('selected_command')} selected_move={selected_move}\n"
         "Recent events:\n"
         f"{event_lines}\n"
         "Recent traces:\n"
