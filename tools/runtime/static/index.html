@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>pokered runtime</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sticky-rail">
+        <section class="hero-card">
+          <div class="hero-header">
+            <div>
+              <p class="eyebrow">Programmable Runtime</p>
+              <h1>Pokemon Blue Control Deck</h1>
+            </div>
+            <div class="hero-metrics">
+              <span id="status-pill" class="status-pill">paused</span>
+              <span id="frame-label" class="metric-pill">frame 0</span>
+              <span id="fps-label" class="metric-pill">0.0 fps</span>
+            </div>
+          </div>
+
+          <div class="frame-shell">
+            <img id="game-frame" class="game-frame" alt="Game Boy framebuffer">
+          </div>
+
+          <div class="hero-summary">
+            <pre id="status-block"></pre>
+          </div>
+        </section>
+
+        <section class="control-card">
+          <div class="section-heading">
+            <h2>Manual Input</h2>
+            <p class="section-copy">Keyboard: arrows, <code>Z</code>, <code>X</code>, <code>Enter</code>, <code>Shift</code></p>
+          </div>
+          <div class="dpad-grid">
+            <button data-button="up">Up</button>
+            <button data-button="left">Left</button>
+            <button data-button="down">Down</button>
+            <button data-button="right">Right</button>
+            <button data-button="a">A</button>
+            <button data-button="b">B</button>
+            <button data-button="start">Start</button>
+            <button data-button="select">Select</button>
+          </div>
+          <div class="action-grid action-grid--routines">
+            <button data-routine="open_menu">Open Menu</button>
+            <button data-routine="close_menu">Close Menu</button>
+            <button data-routine="advance_dialogue">Advance Dialogue</button>
+            <button data-routine="move_up">Move Up</button>
+            <button data-routine="move_down">Move Down</button>
+            <button data-routine="move_left">Move Left</button>
+            <button data-routine="move_right">Move Right</button>
+          </div>
+        </section>
+      </aside>
+
+      <section class="dashboard">
+        <div class="dashboard-section">
+          <div class="section-heading section-heading--dashboard">
+            <div>
+              <p class="eyebrow">Control Surface</p>
+              <h2>Runtime And Agent</h2>
+            </div>
+          </div>
+          <div class="card-grid card-grid--controls">
+            <section class="control-card">
+              <div class="section-heading">
+                <h2>Runtime</h2>
+                <span id="state-slot-label" class="muted-pill">slot: quick</span>
+              </div>
+              <div class="action-grid action-grid--runtime">
+                <button id="resume-btn">Resume</button>
+                <button id="pause-btn">Pause</button>
+                <button id="tick-btn">Step 1f</button>
+                <button id="tick-60-btn">Step 60f</button>
+                <button id="save-state-btn">Save State</button>
+                <button id="load-state-btn">Load State</button>
+                <button id="planner-step-btn">Planner Step</button>
+              </div>
+            </section>
+
+            <section class="control-card">
+              <div class="section-heading">
+                <h2>Agent</h2>
+                <span id="agent-state-label" class="muted-pill">agent: idle</span>
+              </div>
+              <div class="action-grid action-grid--agent">
+                <button id="agent-start-btn">Start Codex Agent</button>
+                <button id="agent-stop-btn">Stop Agent</button>
+                <button id="agent-start-heuristic-btn">Start Heuristic Agent</button>
+              </div>
+              <pre id="agent-status-block" class="compact-block"></pre>
+            </section>
+          </div>
+        </div>
+
+        <div class="dashboard-section">
+          <div class="section-heading section-heading--dashboard">
+            <div>
+              <p class="eyebrow">Live Telemetry</p>
+              <h2>Game State</h2>
+            </div>
+          </div>
+          <div class="card-grid card-grid--summary">
+            <article class="card">
+              <h3>Map</h3>
+              <pre id="map-block"></pre>
+            </article>
+            <article class="card">
+              <h3>Input</h3>
+              <pre id="input-block"></pre>
+            </article>
+            <article class="card">
+              <h3>Battle</h3>
+              <pre id="battle-block"></pre>
+            </article>
+            <article class="card">
+              <h3>States</h3>
+              <pre id="states-block"></pre>
+            </article>
+          </div>
+        </div>
+
+        <div class="dashboard-section">
+          <div class="section-heading section-heading--dashboard">
+            <div>
+              <p class="eyebrow">Readable Output</p>
+              <h2>What The Game Is Showing</h2>
+            </div>
+          </div>
+          <div class="card-grid card-grid--focus">
+            <article class="card card--tall">
+              <h3>Dialogue</h3>
+              <pre id="dialogue-block"></pre>
+            </article>
+            <article class="card">
+              <h3>Menu</h3>
+              <pre id="menu-block"></pre>
+            </article>
+            <article class="card card--tall">
+              <h3>Agent Context</h3>
+              <pre id="agent-context-block"></pre>
+            </article>
+          </div>
+        </div>
+
+        <div class="dashboard-section">
+          <div class="section-heading section-heading--dashboard">
+            <div>
+              <p class="eyebrow">Activity</p>
+              <h2>Runtime And Agent Logs</h2>
+            </div>
+          </div>
+          <div class="card-grid card-grid--logs">
+            <article class="card card--log">
+              <h3>Events</h3>
+              <pre id="events-block"></pre>
+            </article>
+            <article class="card card--log">
+              <h3>Runtime Traces</h3>
+              <pre id="traces-block"></pre>
+            </article>
+            <article class="card card--log">
+              <h3>Agent Log</h3>
+              <pre id="agent-log-block"></pre>
+            </article>
+          </div>
+        </div>
+
+        <div class="dashboard-section">
+          <div class="section-heading section-heading--dashboard">
+            <div>
+              <p class="eyebrow">Low Level</p>
+              <h2>Screen Buffers</h2>
+            </div>
+          </div>
+          <div class="debug-stack">
+            <details class="card debug-card">
+              <summary>Decoded Screen Rows</summary>
+              <pre id="decoded-rows-block"></pre>
+            </details>
+            <details class="card debug-card">
+              <summary>Tilemap Hex Rows</summary>
+              <pre id="tilemap-block"></pre>
+            </details>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

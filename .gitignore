@@ -21,11 +21,15 @@
 # precompiled python
 *.pyc
 *$py.class
+.venv-runtime*
 
 # save game files
 *.sgm
 *.sav
 *.rtc
+*.ram
+.runtime-state/
+.runtime-traces/
 *.sn*
 *.sa*
 *.sg1

@@ -12,6 +12,11 @@ It builds the following ROMs:
 
 To set up the repository, see [**INSTALL.md**](INSTALL.md).
 
+To build and launch a local playable ROM on macOS, see [**PLAYING.md**](PLAYING.md).
+
+To run the programmable runtime and telemetry service, see
+[**tools/runtime/README.md**](tools/runtime/README.md).
+
 
 ## See also
 

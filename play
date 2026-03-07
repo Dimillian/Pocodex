@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")" && pwd)"
+cd "$repo_root"
+
+usage() {
+  cat <<'EOF'
+Usage: ./play [blue|red|blue-debug] [--rebuild]
+
+Examples:
+  ./play
+  ./play red
+  ./play blue-debug --rebuild
+EOF
+}
+
+rom_name="blue"
+force_rebuild=0
+
+for arg in "$@"; do
+  case "$arg" in
+    blue|red|blue-debug)
+      rom_name="$arg"
+      ;;
+    --rebuild)
+      force_rebuild=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $arg" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+case "$rom_name" in
+  blue)
+    make_target="blue"
+    rom_path="$repo_root/pokeblue.gbc"
+    ;;
+  red)
+    make_target="red"
+    rom_path="$repo_root/pokered.gbc"
+    ;;
+  blue-debug)
+    make_target="blue_debug"
+    rom_path="$repo_root/pokeblue_debug.gbc"
+    ;;
+esac
+
+sameboy_app="/Applications/SameBoy.app"
+if [[ ! -d "$sameboy_app" ]]; then
+  echo "SameBoy is not installed at $sameboy_app" >&2
+  echo "Install it with: brew install --cask sameboy" >&2
+  exit 1
+fi
+
+if [[ "$force_rebuild" -eq 1 ]]; then
+  make "$make_target"
+else
+  set +e
+  make -q "$make_target"
+  make_status=$?
+  set -e
+
+  case "$make_status" in
+    0)
+      ;;
+    1)
+      make "$make_target"
+      ;;
+    *)
+      echo "Unable to determine whether $make_target is up to date." >&2
+      exit "$make_status"
+      ;;
+  esac
+fi
+
+exec open -a SameBoy "$rom_path"

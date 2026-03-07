@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")" && pwd)"
+cd "$repo_root"
+
+usage() {
+  cat <<'EOF'
+Usage: ./runtime [blue|red|blue-debug] [options]
+
+Options:
+  --host <host>           Server host (default: 127.0.0.1)
+  --port <port>           Server port (default: 8765)
+  --boot-frames <n>       Advance N frames before serving (default: 600)
+  --paused                Start paused instead of auto-running
+  --no-open               Do not open the browser automatically
+  -h, --help              Show this help text
+
+Examples:
+  ./runtime
+  ./runtime red
+  ./runtime blue-debug --paused
+  ./runtime --port 9000 --no-open
+EOF
+}
+
+log() {
+  printf '[runtime] %s\n' "$*"
+}
+
+fail() {
+  printf '[runtime] ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+rom_name="blue"
+host="127.0.0.1"
+port="8765"
+boot_frames="600"
+auto_run=1
+open_browser=1
+venv_path="${VENV_PATH:-$repo_root/.venv-runtime-uv}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    blue|red|blue-debug)
+      rom_name="$1"
+      shift
+      ;;
+    --host)
+      [[ $# -ge 2 ]] || fail "--host requires a value"
+      host="$2"
+      shift 2
+      ;;
+    --port)
+      [[ $# -ge 2 ]] || fail "--port requires a value"
+      port="$2"
+      shift 2
+      ;;
+    --boot-frames)
+      [[ $# -ge 2 ]] || fail "--boot-frames requires a value"
+      boot_frames="$2"
+      shift 2
+      ;;
+    --paused)
+      auto_run=0
+      shift
+      ;;
+    --no-open)
+      open_browser=0
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      fail "Unknown argument: $1"
+      ;;
+  esac
+done
+
+case "$rom_name" in
+  blue)
+    make_target="blue"
+    rom_path="$repo_root/pokeblue.gbc"
+    ;;
+  red)
+    make_target="red"
+    rom_path="$repo_root/pokered.gbc"
+    ;;
+  blue-debug)
+    make_target="blue_debug"
+    rom_path="$repo_root/pokeblue_debug.gbc"
+    ;;
+esac
+
+if [[ ! -d "$venv_path" ]]; then
+  fail "Runtime virtualenv not found at $venv_path
+Create it with:
+  uv venv --python 3.13 .venv-runtime-uv
+  source .venv-runtime-uv/bin/activate
+  uv pip install -r tools/runtime/requirements.txt"
+fi
+
+if ! command -v curl >/dev/null 2>&1; then
+  fail "curl is required for the startup health check"
+fi
+
+log "Checking ROM target '$rom_name'..."
+set +e
+make -q "$make_target"
+make_status=$?
+set -e
+
+case "$make_status" in
+  0)
+    log "ROM is up to date: $rom_path"
+    ;;
+  1)
+    log "Building ROM target '$make_target'..."
+    make "$make_target"
+    log "Build complete: $rom_path"
+    ;;
+  *)
+    fail "Unable to determine whether '$make_target' is up to date"
+    ;;
+esac
+
+[[ -f "$rom_path" ]] || fail "Expected ROM not found: $rom_path"
+
+health_url="http://$host:$port/health"
+ui_url="http://$host:$port/"
+
+if curl -fsS "$health_url" >/dev/null 2>&1; then
+  fail "A runtime server is already responding on $health_url"
+fi
+
+log "Activating runtime environment..."
+source "$venv_path/bin/activate"
+
+server_args=(python -m tools.runtime.server --rom "$rom_name" --host "$host" --port "$port" --boot-frames "$boot_frames")
+if [[ "$auto_run" -eq 1 ]]; then
+  server_args+=(--auto-run)
+fi
+
+log "Starting runtime server..."
+"${server_args[@]}" &
+server_pid=$!
+
+cleanup() {
+  if kill -0 "$server_pid" >/dev/null 2>&1; then
+    log "Stopping runtime server..."
+    kill "$server_pid" >/dev/null 2>&1 || true
+    wait "$server_pid" >/dev/null 2>&1 || true
+  fi
+}
+
+trap cleanup EXIT INT TERM
+
+ready=0
+for _ in $(seq 1 80); do
+  if curl -fsS "$health_url" >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
+  if ! kill -0 "$server_pid" >/dev/null 2>&1; then
+    wait "$server_pid"
+    fail "Runtime server exited during startup"
+  fi
+  sleep 0.25
+done
+
+if [[ "$ready" -ne 1 ]]; then
+  fail "Runtime server did not become ready at $health_url"
+fi
+
+status_json="$(curl -fsS "$health_url")"
+frame="$(printf '%s' "$status_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["frame"])')"
+running="$(printf '%s' "$status_json" | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin)["running"] else "no")')"
+
+log "Runtime is ready."
+log "UI: $ui_url"
+log "Health: $health_url"
+log "ROM: $rom_name"
+log "Auto-running: $running"
+log "Initial frame: $frame"
+log "Press Ctrl-C to stop the server."
+
+if [[ "$open_browser" -eq 1 ]]; then
+  log "Opening browser..."
+  open "$ui_url"
+fi
+
+wait "$server_pid"

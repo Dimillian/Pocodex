@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")" && pwd)"
+cd "$repo_root"
+
+venv_path="${VENV_PATH:-$repo_root/.venv-runtime-uv}"
+
+if [[ ! -d "$venv_path" ]]; then
+  printf '[agent-runner] ERROR: Runtime virtualenv not found at %s\n' "$venv_path" >&2
+  exit 1
+fi
+
+if ! command -v curl >/dev/null 2>&1; then
+  printf '[agent-runner] ERROR: curl is required\n' >&2
+  exit 1
+fi
+
+base_url="http://127.0.0.1:8765"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base-url)
+      [[ $# -ge 2 ]] || {
+        printf '[agent-runner] ERROR: --base-url requires a value\n' >&2
+        exit 1
+      }
+      base_url="$2"
+      shift 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if ! curl -fsS "$base_url/health" >/dev/null 2>&1; then
+  printf '[agent-runner] ERROR: No runtime server responding at %s/health\n' "$base_url" >&2
+  exit 1
+fi
+
+source "$venv_path/bin/activate"
+exec python -m tools.runtime.agent_runner --base-url "$base_url" "$@"
