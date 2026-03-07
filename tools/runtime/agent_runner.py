@@ -104,24 +104,28 @@ def step_once(
         append_runner_log(log_path, record)
         return record
 
-    result = client.post_json(
-        "/execute_action",
-        {
-            "action": action_id,
-            "reason": reason,
-        },
-    )
-    record["result"] = {
-        "mode": result["mode"],
-        "map": result["map"],
-        "dialogue": result["dialogue"],
-        "menu": {
-            "active": result["menu"]["active"],
-            "selected_item_text": result["menu"]["selected_item_text"],
-            "visible_items": result["menu"]["visible_items"],
-        },
-        "events": result["events"]["recent"][-8:],
-    }
+    tool_result = codex_result.get("tool_result") if codex_result is not None else None
+    if tool_result and tool_result.get("success"):
+        record["result"] = tool_result["result"]
+    else:
+        result = client.post_json(
+            "/execute_action",
+            {
+                "action": action_id,
+                "reason": reason,
+            },
+        )
+        record["result"] = {
+            "mode": result["mode"],
+            "map": result["map"],
+            "dialogue": result["dialogue"],
+            "menu": {
+                "active": result["menu"]["active"],
+                "selected_item_text": result["menu"]["selected_item_text"],
+                "visible_items": result["menu"]["visible_items"],
+            },
+            "events": result["events"]["recent"][-8:],
+        }
     append_runner_log(log_path, record)
     return record
 
@@ -159,6 +163,7 @@ def main() -> None:
                 cwd=repo_root,
                 thread_state_path=thread_state_path,
                 fresh_thread=not args.resume_thread,
+                tool_handler=lambda tool_name, arguments: _handle_codex_runtime_tool(client, tool_name, arguments),
             )
             if args.mode == "codex"
             else _NullCodexClient()
@@ -199,6 +204,70 @@ class _NullCodexClient:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         return None
+
+
+def _handle_codex_runtime_tool(
+    client: RuntimeClient,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    reason = arguments.get("reason")
+    try:
+        result = client.post_json(
+            "/execute_action",
+            {
+                "action": tool_name,
+                "reason": reason,
+            },
+        )
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8")
+        record = {
+            "tool": tool_name,
+            "action": tool_name,
+            "reason": reason,
+            "success": False,
+            "error": f"{exc.code} {detail}",
+        }
+        return {
+            "success": False,
+            "record": record,
+            "content_items": [
+                {
+                    "type": "inputText",
+                    "text": json.dumps(record, ensure_ascii=True),
+                }
+            ],
+        }
+
+    result_summary = {
+        "mode": result["mode"],
+        "map": result["map"],
+        "dialogue": result["dialogue"],
+        "menu": {
+            "active": result["menu"]["active"],
+            "selected_item_text": result["menu"]["selected_item_text"],
+            "visible_items": result["menu"]["visible_items"],
+        },
+        "events": result["events"]["recent"][-8:],
+    }
+    record = {
+        "tool": tool_name,
+        "action": result.get("agent_action", {}).get("action_id", tool_name),
+        "reason": reason,
+        "success": True,
+        "result": result_summary,
+    }
+    return {
+        "success": True,
+        "record": record,
+        "content_items": [
+            {
+                "type": "inputText",
+                "text": json.dumps(record, ensure_ascii=True),
+            }
+        ],
+    }
 
 
 if __name__ == "__main__":

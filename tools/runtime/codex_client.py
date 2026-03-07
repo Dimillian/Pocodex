@@ -7,11 +7,44 @@ import queue
 import subprocess
 from threading import Lock, Thread
 import time
-from typing import Any
+from typing import Any, Callable
 
 
 class CodexAppServerError(RuntimeError):
     pass
+
+
+def _runtime_tool_spec(name: str, description: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "description": description,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Short explanation for why this tool was chosen in the current game state.",
+                }
+            },
+            "additionalProperties": False,
+        },
+    }
+
+
+RUNTIME_DYNAMIC_TOOLS: list[dict[str, Any]] = [
+    _runtime_tool_spec("press_a", "Press the A button to confirm, interact, or advance dialogue."),
+    _runtime_tool_spec("press_b", "Press the B button to cancel or back out."),
+    _runtime_tool_spec("press_start", "Press the Start button to open the in-game menu."),
+    _runtime_tool_spec("press_select", "Press the Select button."),
+    _runtime_tool_spec("move_up", "Attempt to move or navigate upward by one step."),
+    _runtime_tool_spec("move_down", "Attempt to move or navigate downward by one step."),
+    _runtime_tool_spec("move_left", "Attempt to move or navigate left by one step."),
+    _runtime_tool_spec("move_right", "Attempt to move or navigate right by one step."),
+    _runtime_tool_spec("follow_objective", "Let the runtime follow the current navigation objective for several verified steps."),
+    _runtime_tool_spec("wait_short", "Wait briefly for scripted movement, transitions, or text to update."),
+    _runtime_tool_spec("save_quick", "Save the current quick checkpoint."),
+    _runtime_tool_spec("load_quick", "Load the current quick checkpoint."),
+]
 
 
 class CodexAppServerClient:
@@ -21,15 +54,18 @@ class CodexAppServerClient:
         cwd: Path,
         thread_state_path: Path | None = None,
         fresh_thread: bool = False,
+        tool_handler: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self.cwd = cwd
         self.thread_state_path = thread_state_path
         self.fresh_thread = fresh_thread
+        self.tool_handler = tool_handler
         self.thread_id: str | None = None
         self._process: subprocess.Popen[str] | None = None
         self._pending: dict[int, queue.Queue[dict[str, Any]]] = {}
         self._pending_lock = Lock()
         self._events: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._turn_tool_results: dict[str, list[dict[str, Any]]] = {}
         self._next_id = 1
         self._id_lock = Lock()
         self._stderr_lines: deque[str] = deque(maxlen=50)
@@ -135,8 +171,9 @@ class CodexAppServerClient:
         }
         prompt = (
             f"{context['prompt']}\n"
-            "Do not use tools, commands, file edits, or web access. "
-            "Choose one action and return the JSON object only."
+            "Use the provided runtime tools to interact with the game instead of describing an action in prose. "
+            "Prefer exactly one tool call per turn. If a tool reports it is invalid for the current state, choose a different tool. "
+            "After acting, return the JSON object only."
         )
         response = self.request(
             "turn/start",
@@ -172,13 +209,34 @@ class CodexAppServerClient:
         if not turn_id:
             raise CodexAppServerError(f"Missing turn id in turn/start response: {response}")
         result = self._wait_for_turn(turn_id, timeout=timeout)
-        decision = self._parse_agent_decision(result["text"], allowed_ids)
+        tool_results = result.get("tool_results") or []
+        decision: dict[str, str]
+        if result["text"]:
+            decision = self._parse_agent_decision(result["text"], allowed_ids)
+        elif tool_results:
+            tool_record = self._select_tool_result(tool_results)
+            decision = {
+                "action": tool_record["action"],
+                "reason": tool_record.get("reason") or "Executed via runtime tool call.",
+            }
+        else:
+            raise CodexAppServerError(
+                f"Turn '{turn_id}' completed without a tool call or agent message. "
+                f"Recent stderr: {list(self._stderr_lines)}"
+            )
+        tool_record = self._select_tool_result(tool_results)
+        if tool_record and tool_record.get("success"):
+            decision = {
+                "action": tool_record["action"],
+                "reason": decision["reason"],
+            }
         return {
             "decision": decision,
             "thread_id": self._require_thread_id(),
             "turn_id": turn_id,
             "response_text": result["text"],
             "events": result["events"],
+            "tool_result": tool_record,
         }
 
     def request(self, method: str, params: dict[str, Any] | None, *, timeout: float) -> dict[str, Any]:
@@ -245,6 +303,7 @@ class CodexAppServerClient:
                 },
                 "personality": "pragmatic",
                 "summary": "concise",
+                "dynamicTools": RUNTIME_DYNAMIC_TOOLS if self.tool_handler is not None else [],
             },
             timeout=15.0,
         )
@@ -298,14 +357,16 @@ class CodexAppServerClient:
                     raise CodexAppServerError(f"Turn '{turn_id}' ended with status '{status}': {turn}")
                 if not final_text:
                     final_text = self._agent_text_from_turn(turn, agent_text_by_item)
-                if not final_text:
+                tool_results = self._consume_turn_tool_results(turn_id)
+                if not final_text and not tool_results:
                     raise CodexAppServerError(
                         f"Turn '{turn_id}' completed without an agent message. "
                         f"Recent stderr: {list(self._stderr_lines)}"
                     )
                 return {
-                    "text": final_text,
+                    "text": final_text or "",
                     "events": event_log[-20:],
+                    "tool_results": tool_results,
                 }
 
         raise CodexAppServerError(f"Timed out waiting for turn '{turn_id}'")
@@ -431,6 +492,9 @@ class CodexAppServerClient:
     def _respond_to_server_request(self, message: dict[str, Any]) -> None:
         request_id = message.get("id")
         method = message.get("method")
+        if method == "item/tool/call":
+            self._handle_dynamic_tool_call(message)
+            return
         self._write_message(
             {
                 "id": request_id,
@@ -440,6 +504,100 @@ class CodexAppServerClient:
                 },
             }
         )
+
+    def _handle_dynamic_tool_call(self, message: dict[str, Any]) -> None:
+        request_id = message.get("id")
+        params = message.get("params") or {}
+        turn_id = params.get("turnId")
+        tool = params.get("tool")
+        arguments = params.get("arguments") or {}
+
+        if not request_id or not isinstance(tool, str):
+            self._write_message(
+                {
+                    "id": request_id,
+                    "result": {
+                        "contentItems": [
+                            {"type": "inputText", "text": "Invalid dynamic tool request payload."}
+                        ],
+                        "success": False,
+                    },
+                }
+            )
+            return
+
+        if self.tool_handler is None:
+            record = {
+                "tool": tool,
+                "action": tool,
+                "arguments": arguments,
+                "reason": arguments.get("reason"),
+                "success": False,
+                "error": f"No dynamic tool handler is configured for '{tool}'.",
+            }
+            self._record_turn_tool_result(turn_id, record)
+            self._write_message(
+                {
+                    "id": request_id,
+                    "result": {
+                        "contentItems": [
+                            {"type": "inputText", "text": json.dumps(record, ensure_ascii=True)}
+                        ],
+                        "success": False,
+                    },
+                }
+            )
+            return
+
+        try:
+            handler_result = self.tool_handler(tool, arguments)
+        except Exception as exc:
+            record = {
+                "tool": tool,
+                "action": tool,
+                "arguments": arguments,
+                "reason": arguments.get("reason"),
+                "success": False,
+                "error": str(exc),
+            }
+        else:
+            record = dict(handler_result.get("record") or {})
+            record.setdefault("tool", tool)
+            record.setdefault("action", tool)
+            record.setdefault("arguments", arguments)
+            record.setdefault("reason", arguments.get("reason"))
+            record.setdefault("success", bool(handler_result.get("success", True)))
+
+        content_items = handler_result.get("content_items") if "handler_result" in locals() else None
+        if not content_items:
+            content_items = [{"type": "inputText", "text": json.dumps(record, ensure_ascii=True)}]
+        success = bool(record.get("success"))
+        self._record_turn_tool_result(turn_id, record)
+        self._write_message(
+            {
+                "id": request_id,
+                "result": {
+                    "contentItems": content_items,
+                    "success": success,
+                },
+            }
+        )
+
+    def _record_turn_tool_result(self, turn_id: str | None, record: dict[str, Any]) -> None:
+        if not turn_id:
+            return
+        self._turn_tool_results.setdefault(turn_id, []).append(record)
+
+    def _consume_turn_tool_results(self, turn_id: str) -> list[dict[str, Any]]:
+        return self._turn_tool_results.pop(turn_id, [])
+
+    def _select_tool_result(self, tool_results: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not tool_results:
+            return None
+        for record in reversed(tool_results):
+            if record.get("success"):
+                return record
+        return tool_results[-1]
 
     def _load_thread_id(self) -> str | None:
         if self.thread_state_path is None or not self.thread_state_path.exists():

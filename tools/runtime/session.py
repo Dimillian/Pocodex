@@ -494,8 +494,17 @@ class RuntimeSession:
     def _resolve_agent_action_alias(self, action_id: str, actions: dict[str, dict]) -> str:
         button_aliases = {
             "press_a": "a",
+            "interact_a": "a",
+            "menu_confirm": "a",
+            "battle_confirm": "a",
+            "advance_dialogue": "a",
+            "confirm": "a",
             "press_b": "b",
+            "menu_back": "b",
+            "battle_cancel": "b",
+            "cancel": "b",
             "press_start": "start",
+            "open_menu": "start",
             "press_select": "select",
         }
         routine_aliases = {
@@ -503,6 +512,12 @@ class RuntimeSession:
             "down": "move_down",
             "left": "move_left",
             "right": "move_right",
+            "menu_up": "move_up",
+            "menu_down": "move_down",
+            "battle_up": "move_up",
+            "battle_down": "move_down",
+            "battle_left": "move_left",
+            "battle_right": "move_right",
         }
 
         if action_id in routine_aliases and routine_aliases[action_id] in actions:
@@ -514,6 +529,9 @@ class RuntimeSession:
 
         for candidate_id, action in actions.items():
             if action.get("type") == "action" and action.get("button") == button:
+                return candidate_id
+        for candidate_id, action in actions.items():
+            if action.get("type") == "routine" and action.get("name") == f"move_{action_id.removeprefix('menu_').removeprefix('battle_')}":
                 return candidate_id
         return action_id
 
@@ -548,6 +566,12 @@ class RuntimeSession:
 
     def _choose_field_action(self, snapshot: dict) -> dict:
         recent_event_types = [event["type"] for event in snapshot["events"]["recent"][-4:]]
+        if snapshot["dialogue"]["active"] or snapshot["screen"].get("message_box_present"):
+            return {
+                "type": "routine",
+                "name": "advance_dialogue",
+                "reason": "A dialogue box is visible, so continue it with A instead of treating the scene as free movement.",
+            }
         if self._planner_state["oak_intro_active"]:
             return {
                 "type": "routine",

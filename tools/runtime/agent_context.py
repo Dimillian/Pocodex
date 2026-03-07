@@ -9,6 +9,7 @@ def build_agent_context(
     *,
     planner_state: dict[str, Any],
 ) -> dict[str, Any]:
+    dialogue_context = build_dialogue_context(snapshot)
     allowed_actions = build_allowed_actions(snapshot)
     heuristic_next_action = build_heuristic_hint(snapshot, planner_state)
     recent_events = [
@@ -32,7 +33,10 @@ def build_agent_context(
             "map": snapshot["map"],
             "movement": snapshot.get("movement"),
             "navigation": snapshot.get("navigation"),
-            "dialogue": snapshot["dialogue"],
+            "dialogue": {
+                **snapshot["dialogue"],
+                "context": dialogue_context,
+            },
             "menu": {
                 "active": snapshot["menu"]["active"],
                 "visible_items": snapshot["menu"]["visible_items"],
@@ -53,7 +57,10 @@ def build_agent_context(
             "map": snapshot["map"],
             "movement": snapshot.get("movement"),
             "navigation": snapshot.get("navigation"),
-            "dialogue": snapshot["dialogue"],
+            "dialogue": {
+                **snapshot["dialogue"],
+                "context": dialogue_context,
+            },
             "menu": {
                 "active": snapshot["menu"]["active"],
                 "visible_items": snapshot["menu"]["visible_items"],
@@ -102,7 +109,8 @@ def build_allowed_actions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
     mode = snapshot["mode"]
-    if mode in {"dialogue", "menu_dialogue"}:
+    dialogue_visible = snapshot["dialogue"]["active"] or snapshot["screen"].get("message_box_present", False)
+    if mode in {"dialogue", "menu_dialogue"} or dialogue_visible:
         actions.extend(
             [
                 {"id": "press_a", "type": "action", "button": "a", "description": "Advance or confirm the visible dialogue/menu prompt."},
@@ -112,10 +120,10 @@ def build_allowed_actions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     if mode in {"menu", "menu_dialogue"}:
         actions.extend(
             [
-                {"id": "menu_up", "type": "routine", "name": "move_up", "description": "Move the menu cursor up."},
-                {"id": "menu_down", "type": "routine", "name": "move_down", "description": "Move the menu cursor down."},
-                {"id": "menu_confirm", "type": "action", "button": "a", "description": "Confirm the selected menu item."},
-                {"id": "menu_back", "type": "action", "button": "b", "description": "Back out of the current menu."},
+                {"id": "move_up", "type": "routine", "name": "move_up", "description": "Move the menu cursor up."},
+                {"id": "move_down", "type": "routine", "name": "move_down", "description": "Move the menu cursor down."},
+                {"id": "press_a", "type": "action", "button": "a", "description": "Confirm the selected menu item."},
+                {"id": "press_b", "type": "action", "button": "b", "description": "Back out of the current menu."},
             ]
         )
     if mode == "field":
@@ -127,42 +135,57 @@ def build_allowed_actions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 {"id": "move_left", "type": "routine", "name": "move_left", "description": "Attempt to move one step left."},
                 {"id": "move_right", "type": "routine", "name": "move_right", "description": "Attempt to move one step right."},
                 {"id": "press_start", "type": "action", "button": "start", "description": "Open the pause/menu screen."},
-                {"id": "interact_a", "type": "action", "button": "a", "description": "Interact with the tile or object in front of the player."},
+                {"id": "press_a", "type": "action", "button": "a", "description": "Interact with the tile or object in front of the player."},
             ]
         )
     if mode == "battle":
         actions.extend(
             [
-                {"id": "battle_confirm", "type": "action", "button": "a", "description": "Advance or confirm the current battle prompt."},
-                {"id": "battle_cancel", "type": "action", "button": "b", "description": "Back out if the battle menu allows it."},
-                {"id": "battle_up", "type": "routine", "name": "move_up", "description": "Move the battle cursor up."},
-                {"id": "battle_down", "type": "routine", "name": "move_down", "description": "Move the battle cursor down."},
-                {"id": "battle_left", "type": "routine", "name": "move_left", "description": "Move the battle cursor left."},
-                {"id": "battle_right", "type": "routine", "name": "move_right", "description": "Move the battle cursor right."},
+                {"id": "press_a", "type": "action", "button": "a", "description": "Advance or confirm the current battle prompt."},
+                {"id": "press_b", "type": "action", "button": "b", "description": "Back out if the battle menu allows it."},
+                {"id": "move_up", "type": "routine", "name": "move_up", "description": "Move the battle cursor up."},
+                {"id": "move_down", "type": "routine", "name": "move_down", "description": "Move the battle cursor down."},
+                {"id": "move_left", "type": "routine", "name": "move_left", "description": "Move the battle cursor left."},
+                {"id": "move_right", "type": "routine", "name": "move_right", "description": "Move the battle cursor right."},
             ]
         )
 
-    return actions
+    deduped_actions: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for action in actions:
+        action_id = action["id"]
+        if action_id in seen_ids:
+            continue
+        seen_ids.add(action_id)
+        deduped_actions.append(action)
+    return deduped_actions
 
 
 def build_heuristic_hint(snapshot: dict[str, Any], planner_state: dict[str, Any]) -> dict[str, Any]:
     mode = snapshot["mode"]
     navigation = snapshot.get("navigation") or {}
     objective = navigation.get("objective")
+    dialogue_visible = snapshot["dialogue"]["active"] or snapshot["screen"].get("message_box_present", False)
+    dialogue_context = build_dialogue_context(snapshot)
+    if dialogue_visible:
+        return {
+            "action": "press_a",
+            "reason": dialogue_context["recommended_reason"],
+        }
     if mode == "dialogue":
         return {"action": "press_a", "reason": "Visible dialogue is active."}
     if mode == "menu_dialogue":
         if snapshot["menu"]["selected_item_text"]:
-            return {"action": "menu_confirm", "reason": "A menu choice is selected alongside dialogue."}
-        return {"action": "menu_down", "reason": "A menu is open; cursor movement is safer than guessing."}
+            return {"action": "press_a", "reason": "A menu choice is selected alongside dialogue."}
+        return {"action": "move_down", "reason": "A menu is open; cursor movement is safer than guessing."}
     if mode == "menu":
         if snapshot["menu"]["selected_item_text"]:
-            return {"action": "menu_confirm", "reason": "A menu item is selected."}
-        return {"action": "menu_down", "reason": "A menu is open without a selected target."}
+            return {"action": "press_a", "reason": "A menu item is selected."}
+        return {"action": "move_down", "reason": "A menu is open without a selected target."}
     if mode == "field" and snapshot["map"]["id"] == 0 and snapshot["map"]["x"] == 0 and snapshot["map"]["y"] == 0:
         return {"action": "press_start", "reason": "At the title screen, opening the menu is the next deterministic step."}
     if mode == "field" and planner_state.get("oak_intro_active"):
-        return {"action": "interact_a", "reason": "The intro script still appears active."}
+        return {"action": "press_a", "reason": "The intro script still appears active."}
     if mode == "field":
         if navigation.get("consecutive_failures", 0) >= 2:
             return {"action": "wait_short", "reason": "Recent movement attempts failed; re-observe before pushing another direction."}
@@ -171,7 +194,7 @@ def build_heuristic_hint(snapshot: dict[str, Any], planner_state: dict[str, Any]
             return {"action": "follow_objective", "reason": f"Use local navigation to progress toward {objective_label}."}
         return {"action": "move_down", "reason": "Field exploration can probe one move at a time."}
     if mode == "battle":
-        return {"action": "battle_confirm", "reason": "Battle flow is not specialized yet."}
+        return {"action": "press_a", "reason": "Battle flow is not specialized yet."}
     return {"action": "wait_short", "reason": "The state appears transitional."}
 
 
@@ -185,6 +208,7 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
     ) or "- none"
     menu_line = ", ".join(observation["menu"]["visible_items"]) or "none"
     dialogue_line = " | ".join(observation["dialogue"]["visible_lines"]) or "none"
+    dialogue_context = observation["dialogue"].get("context") or {}
     movement = observation.get("movement") or {}
     navigation = observation.get("navigation") or {}
     objective = navigation.get("objective")
@@ -210,6 +234,9 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
         f"Affordances: {affordance_summary}\n"
         f"Last movement result: {move_result}; consecutive failures: {failures}\n"
         f"Dialogue: {dialogue_line}\n"
+        f"Dialogue visible: {dialogue_context.get('visible', False)}; "
+        f"prompt visible: {dialogue_context.get('prompt_visible', False)}; "
+        f"classification: {dialogue_context.get('classification', 'none')}\n"
         f"Menu items: {menu_line}\n"
         f"Selected menu item: {observation['menu']['selected_item_text']}\n"
         "Recent events:\n"
@@ -224,3 +251,39 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
         f"Allowed actions: {allowed_ids}\n"
         'Return JSON only: {"action":"...", "reason":"..."}'
     )
+
+
+def build_dialogue_context(snapshot: dict[str, Any]) -> dict[str, Any]:
+    decoded_rows = snapshot["screen"].get("decoded_rows") or []
+    visible_lines = snapshot["dialogue"].get("visible_lines") or []
+    message_box_present = snapshot["screen"].get("message_box_present", False)
+    visible = bool(visible_lines) or message_box_present
+    dialogue_text = " ".join(visible_lines).strip()
+    box_rows = decoded_rows[12:18] if len(decoded_rows) >= 18 else decoded_rows
+    prompt_visible = any("▼" in row or "▶" in row or "▷" in row for row in box_rows)
+    classification = "none"
+
+    lowered = dialogue_text.lower()
+    if not dialogue_text and visible:
+        classification = "text_box_visible"
+    elif any(keyword in lowered for keyword in ("oak:", "wild pok", "it's unsafe", "hey! wait")):
+        classification = "story_text"
+    elif any(keyword in lowered for keyword in ("yes", "no")):
+        classification = "choice_prompt"
+    elif dialogue_text:
+        classification = "text"
+
+    recommended_reason = "Visible dialogue is active, so advancing with A is safer than field movement."
+    if prompt_visible:
+        recommended_reason = "A dialogue prompt arrow is visible, so press A to advance the conversation."
+    elif classification == "text_box_visible":
+        recommended_reason = "A dialogue box is visible even if the decoded text is incomplete, so press A instead of moving."
+
+    return {
+        "visible": visible,
+        "message_box_present": message_box_present,
+        "prompt_visible": prompt_visible,
+        "classification": classification,
+        "recommended_reason": recommended_reason,
+        "text": dialogue_text,
+    }

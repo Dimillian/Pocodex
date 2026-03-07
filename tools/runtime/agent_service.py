@@ -140,6 +140,7 @@ class AgentController:
                     cwd=self.repo_root,
                     thread_state_path=self.thread_state_path,
                     fresh_thread=fresh_thread,
+                    tool_handler=self._handle_codex_tool_call,
                 )
                 codex_client.start()
                 self._update_status(
@@ -171,7 +172,42 @@ class AgentController:
                     thread_id=codex_meta.get("thread_id"),
                     turn_id=codex_meta.get("turn_id"),
                 )
-                result = self.session.execute_agent_action(action_id, reason)
+                tool_result = codex_meta.get("tool_result")
+                if mode == "codex" and tool_result and tool_result.get("success"):
+                    result = tool_result["result"]
+                    decision = {
+                        "action": tool_result.get("action", action_id),
+                        "reason": reason,
+                    }
+                else:
+                    try:
+                        result = self.session.execute_agent_action(action_id, reason)
+                    except ValueError as exc:
+                        fallback_action = "wait_short"
+                        fallback_reason = (
+                            f"{reason} Fallback to {fallback_action} after unsupported action "
+                            f"{action_id!r}: {exc}"
+                        )
+                        self._append_log(
+                            {
+                                "timestamp": _timestamp(),
+                                "kind": "agent_controller_action_recovered",
+                                "action": action_id,
+                                "fallback_action": fallback_action,
+                                "message": str(exc),
+                            }
+                        )
+                        self._update_status(
+                            state="recovering",
+                            last_error=str(exc),
+                        )
+                        result = self.session.execute_agent_action(fallback_action, fallback_reason)
+                        decision = {
+                            "action": fallback_action,
+                            "reason": fallback_reason,
+                            "requested_action": action_id,
+                            "recovered_from_error": str(exc),
+                        }
                 step_count = self.status()["step_count"] + 1
                 result_summary = {
                     "mode": result["mode"],
@@ -249,6 +285,7 @@ class AgentController:
             "turn_id": result["turn_id"],
             "response_text": result["response_text"],
             "events": result["events"],
+            "tool_result": result.get("tool_result"),
         }
 
     def _update_status(self, **changes: Any) -> None:
@@ -262,3 +299,58 @@ class AgentController:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record) + "\n")
+
+    def _handle_codex_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        reason = arguments.get("reason")
+        try:
+            result = self.session.execute_agent_action(tool_name, reason)
+        except ValueError as exc:
+            context = self.session.agent_context()
+            record = {
+                "tool": tool_name,
+                "action": tool_name,
+                "reason": reason,
+                "success": False,
+                "error": str(exc),
+                "allowed_actions": [action["id"] for action in context["allowed_actions"]],
+                "mode": context["observation"]["mode"],
+            }
+            return {
+                "success": False,
+                "record": record,
+                "content_items": [
+                    {
+                        "type": "inputText",
+                        "text": json.dumps(record, ensure_ascii=True),
+                    }
+                ],
+            }
+
+        result_summary = {
+            "mode": result["mode"],
+            "map": result["map"],
+            "dialogue": result["dialogue"],
+            "menu": {
+                "active": result["menu"]["active"],
+                "selected_item_text": result["menu"]["selected_item_text"],
+                "visible_items": result["menu"]["visible_items"],
+            },
+            "events": result["events"]["recent"][-8:],
+        }
+        record = {
+            "tool": tool_name,
+            "action": result.get("agent_action", {}).get("action_id", tool_name),
+            "reason": reason,
+            "success": True,
+            "result": result_summary,
+        }
+        return {
+            "success": True,
+            "record": record,
+            "content_items": [
+                {
+                    "type": "inputText",
+                    "text": json.dumps(record, ensure_ascii=True),
+                }
+            ],
+        }
