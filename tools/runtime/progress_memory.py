@@ -27,7 +27,9 @@ def summarize_progress_memory(state: dict[str, Any]) -> dict[str, Any]:
     ranked = sorted(
         affordances.values(),
         key=lambda entry: (
+            _lifecycle_rank(entry.get("lifecycle")),
             entry.get("progress_count", 0),
+            entry.get("approach_count", 0),
             -entry.get("noop_count", 0),
             -entry.get("blocked_count", 0),
             entry.get("last_frame", 0),
@@ -75,10 +77,16 @@ def update_progress_memory(state: dict[str, Any], *, before: dict[str, Any], aft
             "label": target.get("label"),
             "selected_count": 0,
             "progress_count": 0,
+            "approach_count": 0,
             "noop_count": 0,
             "blocked_count": 0,
+            "stale_count": 0,
             "last_outcome": None,
             "last_frame": None,
+            "lifecycle": "unseen",
+            "successful_before_signatures": [],
+            "successful_after_signatures": [],
+            "noop_before_signatures": [],
         },
     )
     stats["selected_count"] += 1
@@ -87,23 +95,67 @@ def update_progress_memory(state: dict[str, Any], *, before: dict[str, Any], aft
 
     before_distance = affordance_distance(before, target)
     after_distance = affordance_distance(after, target)
+    before_signature = progress_state_signature(before)
+    after_signature = progress_state_signature(after)
     outcome = "noop"
-    if _made_progress(before, after, before_distance, after_distance):
+    if _made_progress(before, after):
         outcome = "progress"
         stats["progress_count"] += 1
+        _remember_signature(stats["successful_before_signatures"], before_signature)
+        _remember_signature(stats["successful_after_signatures"], after_signature)
         state["recent_progress"].append(f"{key}:progress")
+        stats["lifecycle"] = "useful"
+    elif before_distance is not None and after_distance is not None and after_distance < before_distance:
+        outcome = "approached"
+        stats["approach_count"] += 1
+        if stats["lifecycle"] == "unseen":
+            stats["lifecycle"] = "approaching"
     elif after_distance is not None and before_distance is not None and after_distance > before_distance:
         outcome = "regressed"
         stats["blocked_count"] += 1
+        stats["lifecycle"] = "blocked"
     else:
         same_position = (before["map"]["x"], before["map"]["y"]) == (after["map"]["x"], after["map"]["y"])
         if same_position:
             stats["blocked_count"] += 1
             outcome = "blocked"
+            if _is_stale_noop(before_distance, after_distance):
+                stats["stale_count"] += 1
+                stats["lifecycle"] = "stale"
+                _remember_signature(stats["noop_before_signatures"], before_signature)
+            else:
+                stats["lifecycle"] = "blocked"
         else:
             stats["noop_count"] += 1
+            if _is_stale_noop(before_distance, after_distance):
+                stats["stale_count"] += 1
+                stats["lifecycle"] = "stale"
+                _remember_signature(stats["noop_before_signatures"], before_signature)
+            elif stats["lifecycle"] == "unseen":
+                stats["lifecycle"] = "approaching"
 
     stats["last_outcome"] = outcome
+
+
+def progress_state_signature(snapshot: dict[str, Any]) -> dict[str, Any]:
+    interaction = snapshot.get("interaction") or {}
+    battle = snapshot.get("battle") or {}
+    naming = snapshot.get("naming") or {}
+    pokedex = snapshot.get("pokedex") or {}
+    return {
+        "map": snapshot["map"].get("const_name") or snapshot["map"]["id"],
+        "script": snapshot["map"]["script"],
+        "mode": snapshot["mode"],
+        "interaction": interaction.get("type"),
+        "dialogue": tuple(snapshot["dialogue"].get("visible_lines", [])),
+        "menu": snapshot["menu"].get("selected_item_text"),
+        "battle_ui": battle.get("ui_state"),
+        "player_starter": snapshot["party"].get("player_starter"),
+        "rival_starter": snapshot["party"].get("rival_starter"),
+        "current_species": snapshot["party"].get("current_species"),
+        "naming": naming.get("screen_type") if naming.get("active") else None,
+        "pokedex": pokedex.get("species_name") if pokedex.get("active") else None,
+    }
 
 
 def affordance_distance(snapshot: dict[str, Any], affordance: dict[str, Any]) -> int | None:
@@ -131,8 +183,6 @@ def _remember_map(state: dict[str, Any], snapshot: dict[str, Any]) -> None:
 def _made_progress(
     before: dict[str, Any],
     after: dict[str, Any],
-    before_distance: int | None,
-    after_distance: int | None,
 ) -> bool:
     if before["map"]["id"] != after["map"]["id"]:
         return True
@@ -140,12 +190,42 @@ def _made_progress(
         return True
     if before["mode"] != after["mode"]:
         return True
+    if (before.get("interaction") or {}).get("type") != (after.get("interaction") or {}).get("type"):
+        return True
     if before["dialogue"]["visible_lines"] != after["dialogue"]["visible_lines"]:
         return True
     if before["menu"]["selected_item_text"] != after["menu"]["selected_item_text"]:
         return True
     if before["battle"] != after["battle"]:
         return True
-    if before_distance is not None and after_distance is not None and after_distance < before_distance:
+    if before.get("naming") != after.get("naming"):
+        return True
+    if before.get("pokedex") != after.get("pokedex"):
+        return True
+    if before["party"] != after["party"]:
         return True
     return False
+
+
+def _is_stale_noop(before_distance: int | None, after_distance: int | None) -> bool:
+    if before_distance is None or after_distance is None:
+        return False
+    return before_distance == after_distance == 0
+
+
+def _remember_signature(signatures: list[dict[str, Any]], signature: dict[str, Any], *, limit: int = 8) -> None:
+    if signature in signatures:
+        return
+    signatures.append(signature)
+    if len(signatures) > limit:
+        del signatures[0 : len(signatures) - limit]
+
+
+def _lifecycle_rank(lifecycle: str | None) -> int:
+    return {
+        "useful": 4,
+        "approaching": 3,
+        "unseen": 2,
+        "blocked": 1,
+        "stale": 0,
+    }.get(lifecycle, 0)

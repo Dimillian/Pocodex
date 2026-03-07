@@ -307,6 +307,10 @@ Tasks:
   - repeated/no-op affordance tracking
   - recent target history
 - [x] Add world-model affordance scoring and target selection
+- [x] Add transition-aware affordance lifecycle scoring:
+  - remember which state an affordance was useful from
+  - demote affordances once their resulting state has already been reached
+  - treat repeated zero-distance no-ops as stale instead of evergreen progress
 - [x] Route navigation and agent context through `target_affordance` first, objective fallback second
 - [x] Let Codex choose an explicit `affordance_id` for `follow_target` instead of only following the runtime's default target
 - [x] Reduce per-turn latency by:
@@ -320,7 +324,7 @@ Tasks:
 - [ ] Make the Pallet Town Oak trigger path fully reliable end to end
 - [ ] Decode Oak intro dialogue text from the actually visible screen state, not only `wTileMap`
 - [ ] Replace more map-script/objective heuristics with generic world-model ranking
-- [ ] Add stronger interaction memory so the world model can infer post-battle/post-lab progression without looping on Oak
+- [ ] Add stronger interaction memory so the world model can infer post-battle/post-lab progression without looping on stale local affordances
 
 Exit criteria:
 

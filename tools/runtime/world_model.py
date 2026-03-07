@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from .progress_memory import affordance_distance, affordance_memory_key, summarize_progress_memory
+from .progress_memory import (
+    affordance_distance,
+    affordance_memory_key,
+    progress_state_signature,
+    summarize_progress_memory,
+)
 
 
 BASE_KIND_SCORES = {
@@ -74,14 +79,40 @@ def _score_affordance(
 
     memory_key = affordance_memory_key(snapshot, affordance)
     stats = progress_memory.get("affordances", {}).get(memory_key)
+    current_signature = progress_state_signature(snapshot)
     if not stats:
         score += 25
         reasons.append("unseen affordance")
     else:
-        if stats.get("progress_count", 0):
-            bonus = min(stats["progress_count"], 3) * 8
+        lifecycle = stats.get("lifecycle")
+        if lifecycle == "stale":
+            score -= 45
+            reasons.append("stale in current phase")
+        elif lifecycle == "blocked":
+            score -= 18
+            reasons.append("recently blocked")
+        elif lifecycle == "approaching":
+            score += 6
+            reasons.append("recent approach")
+
+        successful_before_signatures = stats.get("successful_before_signatures", [])
+        successful_after_signatures = stats.get("successful_after_signatures", [])
+        noop_before_signatures = stats.get("noop_before_signatures", [])
+
+        if stats.get("progress_count", 0) and current_signature in successful_before_signatures:
+            bonus = min(stats["progress_count"], 2) * 6
             score += bonus
-            reasons.append(f"historical progress +{bonus}")
+            reasons.append(f"historical progress from this state +{bonus}")
+        if current_signature in successful_after_signatures:
+            score -= 42
+            reasons.append("already consumed in this resulting state")
+        if current_signature in noop_before_signatures:
+            score -= 24
+            reasons.append("known no-op in this state")
+        if stats.get("stale_count", 0):
+            penalty = min(stats["stale_count"], 3) * 10
+            score -= penalty
+            reasons.append(f"stale repeats -{penalty}")
         if stats.get("noop_count", 0):
             penalty = min(stats["noop_count"], 3) * 18
             score -= penalty
@@ -140,6 +171,7 @@ def _prefer_exit_warp(
 
     stale_nonwarp = 0
     checked_nonwarp = 0
+    current_signature = progress_state_signature(snapshot)
     for affordance in affordances:
         if affordance["kind"] == "warp":
             continue
@@ -147,6 +179,11 @@ def _prefer_exit_warp(
         stats = progress_memory.get("affordances", {}).get(affordance_memory_key(snapshot, affordance))
         if not stats:
             continue
-        if stats.get("noop_count", 0) + stats.get("blocked_count", 0) >= 2 and stats.get("progress_count", 0) == 0:
+        if (
+            stats.get("lifecycle") == "stale"
+            or current_signature in stats.get("noop_before_signatures", [])
+            or current_signature in stats.get("successful_after_signatures", [])
+            or stats.get("stale_count", 0) >= 2
+        ):
             stale_nonwarp += 1
     return checked_nonwarp > 0 and stale_nonwarp == checked_nonwarp
