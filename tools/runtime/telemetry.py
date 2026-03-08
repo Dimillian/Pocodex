@@ -395,13 +395,24 @@ def _build_interaction_state(snapshot: dict) -> dict:
                 },
             }
         return {"type": "battle_transition", "prompt": dialogue_text or None, "details": {}}
-    if menu["active"] and {"YES", "NO"}.issubset({item.upper() for item in menu["visible_items"]}):
+    upper_menu_items = {item.upper() for item in menu["visible_items"]}
+    if menu["active"] and {"YES", "NO"}.issubset(upper_menu_items):
         return {
             "type": "binary_choice",
             "prompt": dialogue_text or None,
             "details": {
                 "visible_items": menu["visible_items"],
                 "selected_item_text": menu["selected_item_text"],
+            },
+        }
+    if menu["active"] and "NEW NAME" in upper_menu_items and len(menu["visible_items"]) >= 2:
+        return {
+            "type": "preset_name_choice",
+            "prompt": dialogue_text or None,
+            "details": {
+                "visible_items": menu["visible_items"],
+                "selected_item_text": menu["selected_item_text"],
+                "has_custom_name_option": True,
             },
         }
     if menu["active"]:

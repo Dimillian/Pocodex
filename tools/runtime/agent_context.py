@@ -88,6 +88,7 @@ def build_agent_context(
             "Choose exactly one next action from allowed_actions.",
             "Prefer resolving the current interaction over guessing movement.",
             "When a menu is visible, navigate or confirm within that menu before moving in the field.",
+            "When a preset name list is visible and a listed recommended name exists, prefer that listed option over NEW NAME or manual text entry.",
             "When navigation.target_affordance is present, prefer actions that move toward or interact with that target before relying on the older objective fallback.",
             "When using follow_target, include an affordance_id from navigation.ranked_affordances if you want to choose a specific world target yourself.",
             "If movement fails twice in a row, prefer waiting briefly and re-observing before forcing another direction.",
@@ -135,6 +136,16 @@ def build_allowed_actions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 {"id": "press_b", "type": "action", "button": "b", "description": "Back out or dismiss the current prompt if needed."},
             ]
         )
+    if interaction_type == "preset_name_choice":
+        deduped_actions: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for action in actions:
+            action_id = action["id"]
+            if action_id in seen_ids:
+                continue
+            seen_ids.add(action_id)
+            deduped_actions.append(action)
+        return deduped_actions
     if mode in {"menu", "menu_dialogue", "naming"}:
         actions.extend(
             [
@@ -194,6 +205,15 @@ def build_heuristic_hint(snapshot: dict[str, Any], planner_state: dict[str, Any]
     dialogue_visible = snapshot["dialogue"]["active"] or snapshot["screen"].get("message_box_present", False)
     dialogue_context = build_dialogue_context(snapshot)
     if interaction_type and interaction_type != "field":
+        if interaction_type == "preset_name_choice":
+            recommended_item = _recommended_preset_name(snapshot, planner_state)
+            reason = "A preset name list is open; let the runtime choose a listed name instead of entering NEW NAME."
+            if recommended_item:
+                reason = f"A preset name list is open; prefer the listed name '{recommended_item}' instead of NEW NAME."
+            return {
+                "action": "follow_interaction",
+                "reason": reason,
+            }
         return {
             "action": "follow_interaction",
             "reason": f"The current interaction is {interaction_type}, so let the runtime resolve it safely.",
@@ -275,6 +295,10 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
     failures = navigation.get("consecutive_failures", 0)
     map_name = observation["map"].get("name") or observation["map"].get("const_name") or f"Map {observation['map']['id']}"
     target_reason = navigation.get("target_reason") or "none"
+    recommended_preset_name = _recommended_preset_name(observation, context["planner_state"])
+    preset_name_line = "none"
+    if recommended_preset_name:
+        preset_name_line = recommended_preset_name
 
     return (
         "You are choosing the next action for Pokemon Blue.\n"
@@ -294,6 +318,7 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
         f"classification: {dialogue_context.get('classification', 'none')}\n"
         f"Menu items: {menu_line}\n"
         f"Selected menu item: {observation['menu']['selected_item_text']}\n"
+        f"Recommended preset menu choice: {preset_name_line}\n"
         f"Naming screen: {naming.get('active', False)} type={naming.get('screen_type')} current='{naming.get('current_text')}' base='{naming.get('base_name')}'\n"
         f"Pokedex screen: {pokedex.get('active', False)} species={pokedex.get('species_name')} class={pokedex.get('species_class')} info={' | '.join(pokedex.get('description_lines', []))}\n"
         f"Battle state: ui={battle.get('ui_state')} selected_command={battle.get('command_menu', {}).get('selected_command')} selected_move={selected_move}\n"
@@ -309,6 +334,34 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
         f"Allowed actions: {allowed_ids}\n"
         'Return JSON only: {"action":"...", "reason":"...", "affordance_id":"...optional..."}'
     )
+
+
+def _recommended_preset_name(snapshot: dict[str, Any], planner_state: dict[str, Any]) -> str | None:
+    interaction = snapshot.get("interaction") or {}
+    if interaction.get("type") != "preset_name_choice":
+        return None
+
+    visible_items = snapshot.get("menu", {}).get("visible_items") or []
+    if not visible_items:
+        return None
+
+    dialogue_lines = snapshot.get("dialogue", {}).get("visible_lines") or []
+    normalized_dialogue = " ".join(dialogue_lines).lower()
+    upper_items = {item.upper(): item for item in visible_items}
+
+    preferred_key = None
+    if "your name" in normalized_dialogue:
+        preferred_key = str(planner_state.get("player_name") or "").upper() or None
+    elif "his name" in normalized_dialogue or "rival" in normalized_dialogue:
+        preferred_key = str(planner_state.get("rival_name") or "").upper() or None
+
+    if preferred_key and preferred_key in upper_items:
+        return upper_items[preferred_key]
+
+    for item in visible_items:
+        if item.upper() not in {"NEW NAME", "CANCEL", "EXIT"}:
+            return item
+    return None
 
 
 def build_dialogue_context(snapshot: dict[str, Any]) -> dict[str, Any]:

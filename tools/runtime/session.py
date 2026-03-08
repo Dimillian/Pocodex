@@ -657,6 +657,8 @@ class RuntimeSession:
             }
         if interaction_type == "binary_choice":
             return self._choose_binary_choice_action(snapshot)
+        if interaction_type == "preset_name_choice":
+            return self._choose_menu_action(snapshot, allow_dialogue_fallback=True)
         if interaction_type == "text_entry":
             return self._choose_text_entry_action(snapshot)
         if interaction_type == "battle_command_menu" or interaction_type == "battle_move_menu":
@@ -881,22 +883,42 @@ class RuntimeSession:
             return upper_items[preferred_binary]
 
         if "your name" in normalized_dialogue:
-            preferred_name = self._planner_state["player_name"].upper()
-            if preferred_name in upper_items:
-                return upper_items[preferred_name]
-            if "NEW NAME" in upper_items:
-                return upper_items["NEW NAME"]
+            target = self._select_preset_name_target(visible_items, self._planner_state["player_name"])
+            if target is not None:
+                return target
 
         if "his name" in normalized_dialogue or "rival" in normalized_dialogue:
-            preferred_name = self._planner_state["rival_name"].upper()
-            if preferred_name in upper_items:
-                return upper_items[preferred_name]
-            if "NEW NAME" in upper_items:
-                return upper_items["NEW NAME"]
+            target = self._select_preset_name_target(visible_items, self._planner_state["rival_name"])
+            if target is not None:
+                return target
+
+        if (snapshot.get("interaction") or {}).get("type") == "preset_name_choice":
+            target = self._select_preset_name_target(visible_items, None)
+            if target is not None:
+                return target
 
         for candidate in ("CANCEL", "EXIT"):
             if candidate in upper_items:
                 return upper_items[candidate]
+
+        return None
+
+    def _select_preset_name_target(self, visible_items: list[str], preferred_name: str | None) -> str | None:
+        upper_items = {item.upper(): item for item in visible_items}
+        if preferred_name:
+            normalized_name = preferred_name.upper()
+            if normalized_name in upper_items:
+                return upper_items[normalized_name]
+
+        preset_items = [
+            item for item in visible_items
+            if item.upper() not in {"NEW NAME", "CANCEL", "EXIT"}
+        ]
+        if preset_items:
+            return preset_items[0]
+
+        if "NEW NAME" in upper_items:
+            return upper_items["NEW NAME"]
 
         return None
 
