@@ -59,10 +59,10 @@
       </aside>
 
       <section class="dashboard">
-        <div class="dashboard-section">
+        <div class="dashboard-section dashboard-section--wide">
           <div class="section-heading section-heading--dashboard">
             <div>
-              <p class="eyebrow">Control Surface</p>
+              <p class="eyebrow">Control</p>
               <h2>Runtime And Agent</h2>
             </div>
           </div>
@@ -103,14 +103,41 @@
           </div>
         </div>
 
-        <div class="dashboard-section">
+        <div class="dashboard-section dashboard-section--observe">
+          <div class="section-heading section-heading--dashboard">
+            <div>
+              <p class="eyebrow">Observe</p>
+              <h2>What The Game Is Showing</h2>
+            </div>
+          </div>
+          <div class="card-grid card-grid--observe">
+            <article class="card card--compact">
+              <h3>Interaction</h3>
+              <pre id="interaction-block"></pre>
+            </article>
+            <article class="card card--observe-dialogue">
+              <h3>Dialogue</h3>
+              <pre id="dialogue-block"></pre>
+            </article>
+            <article class="card card--compact">
+              <h3>Menu And Naming</h3>
+              <pre id="menu-block"></pre>
+            </article>
+            <article class="card card--compact">
+              <h3>Battle</h3>
+              <pre id="battle-block"></pre>
+            </article>
+          </div>
+        </div>
+
+        <div class="dashboard-section dashboard-section--world">
           <div class="section-heading section-heading--dashboard">
             <div>
               <p class="eyebrow">World Model</p>
-              <h2>Target, Interaction, And State</h2>
+              <h2>Map, Target, And Runtime State</h2>
             </div>
           </div>
-          <div class="card-grid card-grid--world-top">
+          <div class="card-grid card-grid--world">
             <article class="card card--spotlight card--minimap card--minimap-wide">
               <div class="card-title-row">
                 <h3>World Minimap</h3>
@@ -124,10 +151,6 @@
               <pre id="target-block"></pre>
             </article>
             <article class="card">
-              <h3>Interaction</h3>
-              <pre id="interaction-block"></pre>
-            </article>
-            <article class="card">
               <h3>World Snapshot</h3>
               <pre id="map-block"></pre>
             </article>
@@ -138,14 +161,26 @@
           </div>
         </div>
 
-        <div class="dashboard-section">
+        <div class="dashboard-section dashboard-section--wide">
           <div class="section-heading section-heading--dashboard">
             <div>
-              <p class="eyebrow">Reasoning Surface</p>
-              <h2>Affordances, Memory, And Decisions</h2>
+              <p class="eyebrow">Agent Brain</p>
+              <h2>Decision Inputs, Policy, And Raw Context</h2>
             </div>
           </div>
-          <div class="card-grid card-grid--reasoning">
+          <div class="card-grid card-grid--agent-brain">
+            <article class="card card--tall">
+              <h3>Agent Decision</h3>
+              <pre id="decision-block"></pre>
+            </article>
+            <article class="card">
+              <h3>Allowed Actions</h3>
+              <pre id="allowed-actions-block"></pre>
+            </article>
+            <article class="card">
+              <h3>Planner State</h3>
+              <pre id="planner-state-block"></pre>
+            </article>
             <article class="card card--tall">
               <h3>Ranked Affordances</h3>
               <pre id="affordances-block"></pre>
@@ -154,44 +189,25 @@
               <h3>Progress Memory</h3>
               <pre id="memory-block"></pre>
             </article>
-            <article class="card card--tall">
-              <h3>Agent Decision</h3>
-              <pre id="decision-block"></pre>
-            </article>
+            <details class="card card--detail">
+              <summary>Full Agent Context</summary>
+              <pre id="agent-context-block"></pre>
+            </details>
+            <details class="card card--detail">
+              <summary>Prompt</summary>
+              <pre id="agent-prompt-block"></pre>
+            </details>
           </div>
         </div>
 
-        <div class="dashboard-section">
+        <div class="dashboard-section dashboard-section--wide">
           <div class="section-heading section-heading--dashboard">
             <div>
-              <p class="eyebrow">Readable Output</p>
-              <h2>What The Game Is Showing</h2>
+              <p class="eyebrow">History</p>
+              <h2>Runtime And Agent Activity</h2>
             </div>
           </div>
-          <div class="card-grid card-grid--output">
-            <article class="card card--tall">
-              <h3>Dialogue</h3>
-              <pre id="dialogue-block"></pre>
-            </article>
-            <article class="card">
-              <h3>Menu And Naming</h3>
-              <pre id="menu-block"></pre>
-            </article>
-            <article class="card">
-              <h3>Battle</h3>
-              <pre id="battle-block"></pre>
-            </article>
-          </div>
-        </div>
-
-        <div class="dashboard-section">
-          <div class="section-heading section-heading--dashboard">
-            <div>
-              <p class="eyebrow">Activity</p>
-              <h2>Runtime And Agent Logs</h2>
-            </div>
-          </div>
-          <div class="card-grid card-grid--logs">
+          <div class="card-grid card-grid--history">
             <article class="card card--log">
               <h3>Events</h3>
               <pre id="events-block"></pre>
@@ -207,10 +223,10 @@
           </div>
         </div>
 
-        <div class="dashboard-section">
+        <div class="dashboard-section dashboard-section--debug">
           <div class="section-heading section-heading--dashboard">
             <div>
-              <p class="eyebrow">Low Level</p>
+              <p class="eyebrow">Debug</p>
               <h2>Screen Buffers</h2>
             </div>
           </div>

@@ -18,6 +18,10 @@ const minimapSizeLabelEl = document.getElementById("minimap-size-label");
 const affordancesBlockEl = document.getElementById("affordances-block");
 const memoryBlockEl = document.getElementById("memory-block");
 const decisionBlockEl = document.getElementById("decision-block");
+const allowedActionsBlockEl = document.getElementById("allowed-actions-block");
+const plannerStateBlockEl = document.getElementById("planner-state-block");
+const agentContextBlockEl = document.getElementById("agent-context-block");
+const agentPromptBlockEl = document.getElementById("agent-prompt-block");
 const agentStatusBlockEl = document.getElementById("agent-status-block");
 const agentLogBlockEl = document.getElementById("agent-log-block");
 const decodedRowsBlockEl = document.getElementById("decoded-rows-block");
@@ -134,6 +138,22 @@ function updateFrame(framePngBase64) {
 
 function joinLines(lines, emptyLabel = "none") {
   return lines.filter(Boolean).join("\n") || emptyLabel;
+}
+
+function formatJsonBlock(value, emptyLabel = "none") {
+  if (value === null || value === undefined) {
+    return emptyLabel;
+  }
+  if (typeof value === "string") {
+    return value || emptyLabel;
+  }
+  if (Array.isArray(value) && value.length === 0) {
+    return emptyLabel;
+  }
+  if (typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0) {
+    return emptyLabel;
+  }
+  return JSON.stringify(value, null, 2);
 }
 
 function formatStateSummary(telemetry, running) {
@@ -411,24 +431,42 @@ function formatDecisionBlock(agentContext, agentStatus) {
   const decision = agentStatus.last_decision || {};
   const result = agentStatus.last_result || {};
   const heuristic = agentContext.heuristic_next_action || {};
+  const observation = agentContext.observation || {};
+  const navigation = observation.navigation || {};
   return [
     `agent state     ${agentStatus.state}`,
     `mode            ${agentStatus.mode ?? "none"}`,
     `fresh thread    ${agentStatus.fresh_thread ?? false}`,
     `steps           ${agentStatus.step_count}`,
     `thread          ${agentStatus.thread_id ?? "none"}`,
+    `objective       ${agentContext.objective ?? "none"}`,
     "",
     `last action     ${decision.action ?? "none"}`,
     decision.affordance_id ? `affordance      ${decision.affordance_id}` : null,
     `reason          ${decision.reason ?? "none"}`,
     `result mode     ${result.mode ?? "none"}`,
     result.map?.const_name ? `result map      ${result.map.const_name}` : null,
+    navigation.target_affordance?.label ? `target          ${navigation.target_affordance.label}` : null,
     "",
     `heuristic       ${heuristic.action ?? "none"}`,
     `heuristic why   ${heuristic.reason ?? "none"}`,
     agentStatus.last_error ? "" : null,
     agentStatus.last_error ? `error           ${agentStatus.last_error}` : null,
   ].filter(Boolean).join("\n");
+}
+
+function formatAllowedActionsBlock(agentContext) {
+  const actions = agentContext.allowed_actions || [];
+  if (!actions.length) {
+    return "No allowed actions";
+  }
+  return actions
+    .map((action) => `${action.id}\n  ${action.description ?? action.type}`)
+    .join("\n\n");
+}
+
+function formatPlannerStateBlock(agentContext) {
+  return formatJsonBlock(agentContext.planner_state, "No planner state");
 }
 
 function formatDialogueBlock(telemetry) {
@@ -608,6 +646,10 @@ async function refresh() {
     affordancesBlockEl.textContent = formatAffordancesBlock(telemetry);
     memoryBlockEl.textContent = formatMemoryBlock(telemetry);
     decisionBlockEl.textContent = formatDecisionBlock(agentContext, agentStatus);
+    allowedActionsBlockEl.textContent = formatAllowedActionsBlock(agentContext);
+    plannerStateBlockEl.textContent = formatPlannerStateBlock(agentContext);
+    agentContextBlockEl.textContent = formatJsonBlock(agentContext, "No agent context");
+    agentPromptBlockEl.textContent = agentContext.prompt || "No prompt";
     dialogueBlockEl.textContent = formatDialogueBlock(telemetry);
     menuBlockEl.textContent = formatMenuBlock(telemetry);
     battleBlockEl.textContent = formatBattleBlock(telemetry);
