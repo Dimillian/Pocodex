@@ -312,26 +312,6 @@ body {
   grid-column: span 2;
 }
 
-.card--detail {
-  gap: 0;
-}
-
-.card--detail summary {
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
-  list-style: none;
-}
-
-.card--detail summary::-webkit-details-marker {
-  display: none;
-}
-
-.card--detail[open] summary {
-  margin-bottom: 10px;
-}
-
 .minimap-panel {
   min-height: 160px;
   padding: 8px;
