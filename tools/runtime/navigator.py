@@ -117,7 +117,16 @@ def enrich_snapshot_with_navigation(
         "last_transition": navigation_state.get("last_transition"),
         "consecutive_failures": navigation_state.get("consecutive_failures", 0),
         "blocked_directions": navigation_state.get("blocked_directions", []),
-}
+        "minimap": _build_minimap_model(
+            snapshot,
+            map_info=map_info,
+            map_catalog=map_catalog,
+            objective=objective,
+            target_affordance=world_model["target_affordance"],
+            ranked_affordances=world_model["ranked_affordances"],
+            progress_memory=progress_memory,
+        ),
+    }
 
 
 def choose_field_action(
@@ -196,6 +205,66 @@ def _resolve_target_affordance(snapshot: dict[str, Any], preferred_affordance_id
             if affordance["id"] == preferred_affordance_id:
                 return affordance
     return navigation.get("target_affordance")
+
+
+def _build_minimap_model(
+    snapshot: dict[str, Any],
+    *,
+    map_info,
+    map_catalog: MapCatalog,
+    objective: dict[str, Any] | None,
+    target_affordance: dict[str, Any] | None,
+    ranked_affordances: list[dict[str, Any]],
+    progress_memory: dict[str, Any],
+) -> dict[str, Any] | None:
+    if map_info is None:
+        return None
+
+    grid_data = build_walkability_grid(map_info, map_catalog)
+    if grid_data is None:
+        return None
+
+    walkable_grid, tile_grid = grid_data
+    focus = target_affordance or objective
+    blocked = _blocked_positions(snapshot, focus or {"kind": "none"})
+    target_tiles = sorted(_objective_targets(snapshot, focus, walkable_grid, blocked)) if focus else []
+    path = _path_to_objective(snapshot, focus, map_info=map_info, map_catalog=map_catalog) if focus else []
+
+    current = (snapshot["map"]["x"], snapshot["map"]["y"])
+    path_tiles: list[dict[str, int | str]] = []
+    x, y = current
+    for direction in path:
+        if direction == "up":
+            y -= 1
+        elif direction == "down":
+            y += 1
+        elif direction == "left":
+            x -= 1
+        elif direction == "right":
+            x += 1
+        path_tiles.append({"x": x, "y": y, "direction": direction})
+
+    return {
+        "width": len(walkable_grid[0]) if walkable_grid else 0,
+        "height": len(walkable_grid),
+        "walkable_grid": walkable_grid,
+        "tile_grid": tile_grid,
+        "player": {
+            "x": snapshot["map"]["x"],
+            "y": snapshot["map"]["y"],
+        },
+        "blocked_positions": [
+            {"x": x_coord, "y": y_coord}
+            for x_coord, y_coord in sorted(blocked)
+        ],
+        "target_tiles": [
+            {"x": x_coord, "y": y_coord}
+            for x_coord, y_coord in target_tiles
+        ],
+        "path_tiles": path_tiles,
+        "ranked_affordance_ids": [affordance["id"] for affordance in ranked_affordances[:8]],
+        "visited_maps": sorted(progress_memory.get("visited_maps", set())),
+    }
 
 
 def update_navigation_state(

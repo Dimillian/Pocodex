@@ -12,6 +12,9 @@ const statesBlockEl = document.getElementById("states-block");
 const tracesBlockEl = document.getElementById("traces-block");
 const targetBlockEl = document.getElementById("target-block");
 const interactionBlockEl = document.getElementById("interaction-block");
+const minimapPanelEl = document.getElementById("minimap-panel");
+const minimapLegendBlockEl = document.getElementById("minimap-legend-block");
+const minimapSizeLabelEl = document.getElementById("minimap-size-label");
 const affordancesBlockEl = document.getElementById("affordances-block");
 const memoryBlockEl = document.getElementById("memory-block");
 const decisionBlockEl = document.getElementById("decision-block");
@@ -219,6 +222,152 @@ function formatInteractionBlock(telemetry) {
     pokedex.active && pokedex.species_class ? `class          ${pokedex.species_class}` : null,
     pokedex.active && pokedex.height_weight ? `stats          ${pokedex.height_weight}` : null,
   ].filter(Boolean).join("\n");
+}
+
+function keyForPoint(x, y) {
+  return `${x},${y}`;
+}
+
+function renderMinimap(telemetry) {
+  const minimap = telemetry.navigation?.minimap;
+  minimapPanelEl.replaceChildren();
+  minimapPanelEl.classList.toggle("is-empty", !minimap);
+
+  if (!minimap || !minimap.width || !minimap.height) {
+    minimapPanelEl.textContent = "No minimap data for this screen";
+    minimapLegendBlockEl.textContent = "legend\nNo map grid available";
+    minimapSizeLabelEl.textContent = "0 x 0";
+    return;
+  }
+
+  minimapSizeLabelEl.textContent = `${minimap.width} x ${minimap.height}`;
+
+  const gridEl = document.createElement("div");
+  gridEl.className = "minimap-grid";
+  gridEl.style.setProperty("--minimap-width", String(minimap.width));
+
+  const walkableGrid = minimap.walkable_grid || [];
+  const blocked = new Set((minimap.blocked_positions || []).map((point) => keyForPoint(point.x, point.y)));
+  const targetTiles = new Set((minimap.target_tiles || []).map((point) => keyForPoint(point.x, point.y)));
+  const pathTiles = new Set((minimap.path_tiles || []).map((point) => keyForPoint(point.x, point.y)));
+  const playerKey = minimap.player ? keyForPoint(minimap.player.x, minimap.player.y) : null;
+  const visitedMaps = new Set(minimap.visited_maps || []);
+  const rankedIds = minimap.ranked_affordance_ids || [];
+  const topRankIds = new Set(rankedIds.slice(0, 3));
+  const targetAffordanceId = telemetry.navigation?.target_affordance?.id || null;
+
+  const objectMarkers = new Map();
+  const warpMarkers = new Map();
+  const bgMarkers = new Map();
+  const triggerCells = new Set();
+
+  const affordances = telemetry.navigation?.affordances || [];
+  for (const affordance of affordances) {
+    if (affordance.kind === "warp" && affordance.target) {
+      warpMarkers.set(keyForPoint(affordance.target.x, affordance.target.y), {
+        label: affordance.label,
+        unexplored: affordance.target_map && affordance.target_map !== "LAST_MAP" && !visitedMaps.has(affordance.target_map),
+        topRank: topRankIds.has(affordance.id),
+        target: affordance.id === targetAffordanceId,
+      });
+    } else if (affordance.kind === "object" && affordance.target) {
+      objectMarkers.set(keyForPoint(affordance.target.x, affordance.target.y), {
+        label: affordance.label,
+        sprite: affordance.sprite,
+        topRank: topRankIds.has(affordance.id),
+        target: affordance.id === targetAffordanceId,
+      });
+    } else if (affordance.kind === "bg_event" && affordance.target) {
+      bgMarkers.set(keyForPoint(affordance.target.x, affordance.target.y), {
+        label: affordance.label,
+        topRank: topRankIds.has(affordance.id),
+        target: affordance.id === targetAffordanceId,
+      });
+    } else if (affordance.kind === "trigger_region") {
+      if (affordance.axis === "y") {
+        for (let x = 0; x < minimap.width; x += 1) {
+          triggerCells.add(keyForPoint(x, affordance.value));
+        }
+      } else if (affordance.axis === "x") {
+        for (let y = 0; y < minimap.height; y += 1) {
+          triggerCells.add(keyForPoint(affordance.value, y));
+        }
+      }
+    }
+  }
+
+  for (let y = 0; y < minimap.height; y += 1) {
+    for (let x = 0; x < minimap.width; x += 1) {
+      const cellEl = document.createElement("div");
+      const pointKey = keyForPoint(x, y);
+      const walkable = Boolean(walkableGrid[y]?.[x]);
+      cellEl.className = `minimap-cell ${walkable ? "is-walkable" : "is-wall"}`;
+
+      if (triggerCells.has(pointKey)) cellEl.classList.add("is-trigger");
+      if (pathTiles.has(pointKey)) cellEl.classList.add("is-path");
+      if (targetTiles.has(pointKey)) cellEl.classList.add("is-target-tile");
+      if (blocked.has(pointKey)) cellEl.classList.add("is-blocked");
+
+      const warp = warpMarkers.get(pointKey);
+      const object = objectMarkers.get(pointKey);
+      const bg = bgMarkers.get(pointKey);
+
+      let marker = "";
+      if (pointKey === playerKey) {
+        cellEl.classList.add("is-player");
+        marker = "P";
+      } else if (warp) {
+        cellEl.classList.add("has-marker", "is-warp");
+        if (warp.unexplored) cellEl.classList.add("is-unexplored");
+        if (warp.topRank) cellEl.classList.add("is-top-rank");
+        if (warp.target) cellEl.classList.add("is-target-marker");
+        marker = "W";
+      } else if (object) {
+        cellEl.classList.add("has-marker", "is-object");
+        if (object.topRank) cellEl.classList.add("is-top-rank");
+        if (object.target) cellEl.classList.add("is-target-marker");
+        marker = "O";
+      } else if (bg) {
+        cellEl.classList.add("has-marker", "is-bg");
+        if (bg.topRank) cellEl.classList.add("is-top-rank");
+        if (bg.target) cellEl.classList.add("is-target-marker");
+        marker = "S";
+      } else if (targetTiles.has(pointKey)) {
+        marker = "◎";
+      } else if (pathTiles.has(pointKey)) {
+        marker = "·";
+      }
+
+      if (marker) {
+        const markerEl = document.createElement("span");
+        markerEl.className = "minimap-marker";
+        markerEl.textContent = marker;
+        cellEl.append(markerEl);
+      }
+
+      const titleParts = [`(${x}, ${y})`, walkable ? "walkable" : "wall"];
+      if (warp) titleParts.push(warp.label);
+      if (object) titleParts.push(object.label);
+      if (bg) titleParts.push(bg.label);
+      if (pointKey === playerKey) titleParts.push("player");
+      if (targetTiles.has(pointKey)) titleParts.push("target tile");
+      if (pathTiles.has(pointKey)) titleParts.push("planned path");
+      cellEl.title = titleParts.join(" | ");
+      gridEl.appendChild(cellEl);
+    }
+  }
+
+  minimapPanelEl.appendChild(gridEl);
+
+  const lines = [
+    "legend",
+    "P player  W warp  O object  S sign/bg",
+    "◎ target tile  · path  cyan line trigger region",
+    "gold border current target  blue border top-ranked",
+    `visited maps   ${(minimap.visited_maps || []).length}`,
+    `target         ${telemetry.navigation?.target_affordance?.id ?? "none"}`,
+  ];
+  minimapLegendBlockEl.textContent = lines.join("\n");
 }
 
 function formatAffordancesBlock(telemetry) {
@@ -455,6 +604,7 @@ async function refresh() {
     statesBlockEl.textContent = formatStatesAndInput(states, telemetry);
     targetBlockEl.textContent = formatTargetBlock(telemetry);
     interactionBlockEl.textContent = formatInteractionBlock(telemetry);
+    renderMinimap(telemetry);
     affordancesBlockEl.textContent = formatAffordancesBlock(telemetry);
     memoryBlockEl.textContent = formatMemoryBlock(telemetry);
     decisionBlockEl.textContent = formatDecisionBlock(agentContext, agentStatus);
