@@ -4,7 +4,7 @@ from typing import Any
 
 from .map_data import MapCatalog
 from .navigator import choose_field_action as choose_navigation_field_action
-from .objective_inference import record_map_history
+from .objective_memory import record_map_history
 from .runtime_memory import advance_field_move_index, decision_preference, set_decision_flag
 
 

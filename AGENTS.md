@@ -37,6 +37,20 @@ for playing and instrumenting the game.
   deterministic routines.
 - `tools/runtime/objective_runner.py`
   Owns planner-step execution plus objective, target, and interaction macros.
+- `tools/runtime/affordance_builder.py`
+  Builds and annotates nearby world affordances, including reachability,
+  semantic labels, and interaction hints.
+- `tools/runtime/objective_memory.py`
+  Owns inferred-objective memory, progress tracking, invalidation, and
+  interaction-resolution bookkeeping.
+- `tools/runtime/objective_scoring.py`
+  Turns affordances plus runtime memory into ranked candidate objectives and
+  active-objective state.
+- `tools/runtime/objective_queries.py`
+  Resolves and reconstructs objective ids against the current snapshot.
+- `tools/runtime/objective_primitives.py`
+  Holds shared objective ids, labels, phase helpers, and distance logic used by
+  the scoring and query layers.
 - `tools/runtime/snapshot_service.py`
   Builds telemetry, snapshot bundles, event logs, and agent context payloads.
 - `tools/runtime/trace_recorder.py`

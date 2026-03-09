@@ -11,13 +11,13 @@ from .interaction_policy import (
     update_decision_state,
     update_move_strategy,
 )
-from .objective_inference import (
-    find_objective_by_id,
-    objective_distance,
+from .objective_memory import (
     reconcile_objective_interaction_resolution,
     record_objective_selection,
     update_objective_memory,
 )
+from .objective_primitives import objective_distance
+from .objective_queries import find_objective_by_id
 from .runtime_core import RuntimeCore
 from .runtime_memory import RuntimeMemory
 from .snapshot_service import SnapshotService

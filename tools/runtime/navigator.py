@@ -3,8 +3,10 @@ from __future__ import annotations
 from collections import deque
 from typing import Any
 
+from .affordance_builder import build_affordances
 from .map_data import MapCatalog, build_walkability_grid
-from .objective_inference import build_affordances, build_objective_state, find_objective_by_id
+from .objective_queries import find_objective_by_id
+from .objective_scoring import build_objective_state
 from .world_model import build_world_model
 
 

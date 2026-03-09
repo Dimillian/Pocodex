@@ -71,6 +71,16 @@ small set of focused modules:
 - `interaction_policy.py` for menu/dialogue/battle/planner decision helpers
 - `action_executor.py` for validated input execution and deterministic routines
 - `objective_runner.py` for planner-step and objective-following macros
+- `affordance_builder.py` for building nearby world affordances and their
+  reachability/semantic annotations
+- `objective_memory.py` for inferred-objective memory, progress tracking, and
+  invalidation bookkeeping
+- `objective_scoring.py` for ranking candidate objectives from affordances plus
+  runtime memory
+- `objective_queries.py` for resolving and reconstructing objective ids from
+  the current snapshot
+- `objective_primitives.py` for shared objective ids, labels, phases, and
+  distance helpers
 
 ## Endpoints
 

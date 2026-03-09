@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
-from .objective_inference import fresh_objective_memory
+from .objective_memory import fresh_objective_memory
 from .progress_memory import capture_progress_memory, fresh_progress_memory
 
 RuntimeMemoryState = tuple[dict[str, Any], dict[str, Any], dict[str, Any]]
