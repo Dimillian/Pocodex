@@ -91,6 +91,7 @@ Available ROM values:
 - party members with current HP, max HP, status, and nicknames
 - bag inventory with item names and quantities
 - trainer economy/progression state with money and badges
+- named event-flag progress summaries and the current map-script pointer
 - decoded screen rows from `wTileMap`
 - extracted dialogue text from the standard bottom message box
 - validated menu extraction that only activates when a visible cursor is on screen
@@ -104,6 +105,7 @@ runtime read, which keeps the UI frame and the agent-visible state in sync.
 
 - `world_state`, a compact strategic view of the current snapshot
 - `affordances`, semantic nearby exits / entities / triggers / inspectables
+- richer progress state, including key event flags and compact milestone summaries
 - `objective_state`, including:
   - active objective
   - candidate objectives with confidence and evidence

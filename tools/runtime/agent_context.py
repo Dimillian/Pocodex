@@ -59,6 +59,7 @@ def build_agent_context(
         "party": snapshot.get("party"),
         "inventory": snapshot.get("inventory"),
         "trainer": snapshot.get("trainer"),
+        "progress": snapshot.get("progress"),
         "menu": {
             "active": snapshot["menu"]["active"],
             "visible_items": snapshot["menu"]["visible_items"],
@@ -437,6 +438,7 @@ def _build_mode_state(
         "map": _compact_map(snapshot["map"]),
         "dialogue": _compact_dialogue(snapshot, dialogue_context),
         "resources": _compact_resources(snapshot),
+        "progress": _compact_progress(snapshot.get("progress") or {}),
     }
     if mode == "field":
         state["movement"] = {
@@ -557,6 +559,19 @@ def _compact_resources(snapshot: dict[str, Any]) -> dict[str, Any]:
         "party_summary": _summarize_party(snapshot.get("party") or {}),
         "inventory_summary": _summarize_inventory(snapshot.get("inventory") or {}),
         "trainer_summary": _summarize_money_and_badges(snapshot.get("trainer") or {}),
+    }
+
+
+def _compact_progress(progress: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "script_pointer": progress.get("script_pointer"),
+        "story_flags": (progress.get("story_flags") or [])[:6],
+        "milestones": (progress.get("milestones") or [])[:6],
+        "key_events": {
+            key: value
+            for key, value in (progress.get("key_events") or {}).items()
+            if value
+        },
     }
 
 

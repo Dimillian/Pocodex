@@ -184,16 +184,23 @@ def _score_affordance(
 
     if affordance["kind"] == "object":
         text_ref = affordance.get("text_ref") or ""
+        identity_hints = set(affordance.get("identity_hints") or [])
         if text_ref.endswith("POKE_BALL") and snapshot["party"]["player_starter"] == 0:
             score += 35
             reasons.append("starter ball before selection")
+        if "story_npc" in identity_hints:
+            score += 8
+            reasons.append("story-relevant NPC")
+        if {"info_fixture", "reference_display"} & identity_hints:
+            score -= 6
+            reasons.append("reference fixture is lower urgency than live actors")
         if choice_focus_level >= 2:
             score += 28
             reasons.append("choice interaction is ready from current tile")
         elif choice_focus_level == 1:
             score += 12
             reasons.append("choice interaction is nearby")
-        if nearby_choice_interaction and {"pickup_like", "starter_choice_like"} & set(affordance.get("identity_hints") or []):
+        if nearby_choice_interaction and {"pickup_like", "starter_choice_like"} & identity_hints:
             score += 18
             reasons.append("nearby choice interaction should be resolved before trigger recovery")
         if engaged_choice_interaction and choice_focus_level == 0 and distance is not None and distance <= 1:

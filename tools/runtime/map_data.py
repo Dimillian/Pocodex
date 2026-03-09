@@ -12,6 +12,7 @@ BG_EVENT_RE = re.compile(r"^\s*bg_event\s+(\d+),\s*(\d+),\s*([A-Z0-9_]+)")
 OBJECT_EVENT_RE = re.compile(
     r"^\s*object_event\s+(\d+),\s*(\d+),\s*([A-Z0-9_]+),\s*([A-Z_]+),\s*([A-Z_]+),\s*([A-Z0-9_]+)"
 )
+OBJECT_CONST_EXPORT_RE = re.compile(r"^\s*const_export\s+([A-Z0-9_]+)")
 MAP_KEY_RE = re.compile(r"^\s*def_warps_to\s+([A-Z0-9_]+)")
 TILESET_RE = re.compile(r"^\s*tileset\s+([A-Za-z0-9_]+),")
 BLOCK_LABEL_RE = re.compile(r"^\s*([A-Za-z0-9_]+)_Block::(?:\s+INCBIN\s+\"([^\"]+)\")?")
@@ -41,6 +42,7 @@ class MapObject:
     movement: str
     facing: str
     text_ref: str
+    const_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -160,11 +162,14 @@ def _attach_object_data(maps: dict[str, MapInfo], objects_dir: Path) -> None:
     for path in sorted(objects_dir.glob("*.asm")):
         lines = path.read_text(encoding="utf-8").splitlines()
         map_key = None
+        object_const_names: list[str] = []
         for line in lines:
             key_match = MAP_KEY_RE.match(line)
             if key_match:
                 map_key = key_match.group(1)
-                break
+            const_export_match = OBJECT_CONST_EXPORT_RE.match(line)
+            if const_export_match:
+                object_const_names.append(const_export_match.group(1))
         if map_key is None or map_key not in maps:
             continue
 
@@ -200,6 +205,7 @@ def _attach_object_data(maps: dict[str, MapInfo], objects_dir: Path) -> None:
             object_match = OBJECT_EVENT_RE.match(line)
             if object_match:
                 x, y, sprite, movement, facing, text_ref = object_match.groups()
+                const_name = object_const_names[len(objects)] if len(object_const_names) > len(objects) else None
                 objects.append(
                     MapObject(
                         x=int(x),
@@ -208,6 +214,7 @@ def _attach_object_data(maps: dict[str, MapInfo], objects_dir: Path) -> None:
                         movement=movement,
                         facing=facing,
                         text_ref=text_ref,
+                        const_name=const_name,
                     )
                 )
         maps[map_key].warps = warps

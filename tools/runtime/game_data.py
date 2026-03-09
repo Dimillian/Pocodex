@@ -17,6 +17,10 @@ MOVE_DATA_RE = re.compile(
     r"(?P<accuracy>\d+)\s*,\s+"
     r"(?P<pp>\d+)"
 )
+CONST_DEF_RE = re.compile(r"^\s*const_def(?:\s+(.+))?$")
+CONST_NEXT_RE = re.compile(r"^\s*const_next\s+(.+)$")
+CONST_SKIP_RE = re.compile(r"^\s*const_skip(?:\s+(.+))?$")
+CONST_RE = re.compile(r"^\s*const\s+([A-Z0-9_]+)")
 
 
 @dataclass(frozen=True)
@@ -110,6 +114,54 @@ def load_species_catalog(repo_root: Path) -> dict[int, str]:
     }
 
 
+def load_event_catalog(repo_root: Path) -> dict[int, str]:
+    path = repo_root / "constants" / "event_constants.asm"
+    next_value = 0
+    catalog: dict[int, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split(";", 1)[0].rstrip()
+        if not line:
+            continue
+        const_def_match = CONST_DEF_RE.match(line)
+        if const_def_match:
+            expr = const_def_match.group(1)
+            next_value = _parse_const_expression(expr) if expr else 0
+            continue
+        const_next_match = CONST_NEXT_RE.match(line)
+        if const_next_match:
+            next_value = _parse_const_expression(const_next_match.group(1))
+            continue
+        const_skip_match = CONST_SKIP_RE.match(line)
+        if const_skip_match:
+            amount_expr = const_skip_match.group(1)
+            next_value += _parse_const_expression(amount_expr) if amount_expr else 1
+            continue
+        const_match = CONST_RE.match(line)
+        if const_match:
+            catalog[next_value] = const_match.group(1)
+            next_value += 1
+    return catalog
+
+
+def _parse_const_expression(expr: str) -> int:
+    total: int | None = None
+    operator = "+"
+    for token in expr.replace("$", "0x").split():
+        if token in {"+", "-"}:
+            operator = token
+            continue
+        value = int(token, 0)
+        if total is None:
+            total = value
+            continue
+        if operator == "+":
+            total += value
+        else:
+            total -= value
+    return total or 0
+
+
 DEFAULT_MOVE_CATALOG = load_move_catalog(Path(__file__).resolve().parents[2])
 DEFAULT_ITEM_CATALOG = load_item_catalog(Path(__file__).resolve().parents[2])
 DEFAULT_SPECIES_CATALOG = load_species_catalog(Path(__file__).resolve().parents[2])
+DEFAULT_EVENT_CATALOG = load_event_catalog(Path(__file__).resolve().parents[2])

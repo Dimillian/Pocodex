@@ -323,6 +323,11 @@ Tasks:
   - bag inventory and quantities
   - money and obtained badges
 - [x] Thread trainer-state summaries through agent context and the runtime web UI
+- [x] Add progression-aware runtime grounding:
+  - decode named event flags from `wEventFlags`
+  - expose the current map-script pointer in telemetry
+  - infer richer semantic labels for signs / story NPCs / choice objects
+  - classify binary/name interactions for deterministic runtime resolution
 - [x] Validate the first overworld milestones:
   - leave Red's bedroom
   - go downstairs

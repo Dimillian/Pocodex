@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import re
 
 from .game_data import (
+    DEFAULT_EVENT_CATALOG,
     DEFAULT_ITEM_CATALOG,
     DEFAULT_MOVE_CATALOG,
     DEFAULT_SPECIES_CATALOG,
@@ -100,9 +101,11 @@ SYMBOL_NAMES = (
     "wBagItems",
     "wPlayerMoney",
     "wObtainedBadges",
+    "wEventFlags",
     "wPlayerStarter",
     "wRivalStarter",
     "wCurPartySpecies",
+    "wCurMapScriptPtr",
     "hJoyReleased",
     "hJoyPressed",
     "hJoyHeld",
@@ -132,6 +135,10 @@ def _blank_ratio(decoded_rows: list[str]) -> float:
 
 def _read_u16_be(mem, address: int) -> int:
     return (mem[address] << 8) | mem[address + 1]
+
+
+def _read_u16_le(mem, address: int) -> int:
+    return mem[address] | (mem[address + 1] << 8)
 
 
 def _decode_ram_text(mem, address: int, length: int) -> str:
@@ -238,9 +245,109 @@ def _build_trainer_state(mem, addresses: TelemetryAddresses) -> dict:
     }
 
 
+def _build_progress_state(mem, addresses: TelemetryAddresses, *, party_state: dict) -> dict:
+    if EVENT_FLAG_BYTE_COUNT <= 0:
+        return {
+            "script_pointer": None,
+            "event_count": 0,
+            "story_flags": [],
+            "key_events": {},
+            "milestones": [],
+        }
+
+    flag_base = addresses["wEventFlags"]
+    active_events = [
+        name
+        for index, name in DEFAULT_EVENT_CATALOG.items()
+        if mem[flag_base + (index // 8)] & (1 << (index % 8))
+    ]
+    active_set = set(active_events)
+    story_flags = [name for name in active_events if name.startswith(STORY_EVENT_PREFIXES)]
+    story_flags.sort(key=_story_event_sort_key)
+    return {
+        "script_pointer": _read_u16_le(mem, addresses["wCurMapScriptPtr"]),
+        "event_count": len(active_events),
+        "story_flags": story_flags[:12],
+        "key_events": {name: name in active_set for name in KEY_EVENT_NAMES},
+        "milestones": _derive_progress_milestones(active_set, party_state=party_state),
+    }
+
+
+def _story_event_sort_key(name: str) -> tuple[int, str]:
+    if name.startswith("EVENT_GOT_"):
+        return (0, name)
+    if name.startswith("EVENT_OAK_"):
+        return (1, name)
+    if name.startswith("EVENT_FOLLOWED_"):
+        return (2, name)
+    if name.startswith("EVENT_PALLET_"):
+        return (3, name)
+    if name.startswith("EVENT_BATTLED_"):
+        return (4, name)
+    if name.startswith("EVENT_ENTERED_"):
+        return (5, name)
+    if name.startswith("EVENT_GAVE_"):
+        return (6, name)
+    if name.startswith("EVENT_FOUND_"):
+        return (7, name)
+    if name.startswith("EVENT_MET_"):
+        return (8, name)
+    return (9, name)
+
+
+def _derive_progress_milestones(active_events: set[str], *, party_state: dict) -> list[str]:
+    milestones: list[str] = []
+    if "EVENT_OAK_APPEARED_IN_PALLET" in active_events:
+        milestones.append("oak_intro_triggered")
+    if "EVENT_FOLLOWED_OAK_INTO_LAB" in active_events:
+        milestones.append("followed_oak_into_lab")
+    if "EVENT_OAK_ASKED_TO_CHOOSE_MON" in active_events:
+        milestones.append("starter_choice_open")
+    if "EVENT_GOT_STARTER" in active_events or party_state.get("player_starter"):
+        milestones.append("starter_selected")
+    if "EVENT_BATTLED_RIVAL_IN_OAKS_LAB" in active_events:
+        milestones.append("oak_lab_rival_battle_complete")
+    if "EVENT_GOT_POKEBALLS_FROM_OAK" in active_events:
+        milestones.append("received_pokeballs")
+    if "EVENT_GOT_POKEDEX" in active_events:
+        milestones.append("received_pokedex")
+    if "EVENT_GOT_TOWN_MAP" in active_events:
+        milestones.append("received_town_map")
+    if "EVENT_GOT_OAKS_PARCEL" in active_events:
+        milestones.append("holding_oaks_parcel")
+    if "EVENT_OAK_GOT_PARCEL" in active_events:
+        milestones.append("delivered_oaks_parcel")
+    return milestones
+
+
 DECORATION_TOKEN_RE = re.compile(r"BOLD_[A-Z]|<[0-9A-Fa-f]{2}>")
 UPPER_TOKEN_RE = re.compile(r"[A-Z][A-Z0-9'.-]{2,}")
 DEX_NUMBER_RE = re.compile(r"(?:NO\.|·\.|\.)(\d{3})", re.IGNORECASE)
+STORY_EVENT_PREFIXES = (
+    "EVENT_GOT_",
+    "EVENT_FOLLOWED_",
+    "EVENT_OAK_",
+    "EVENT_PALLET_",
+    "EVENT_ENTERED_",
+    "EVENT_BATTLED_",
+    "EVENT_GAVE_",
+    "EVENT_FOUND_",
+    "EVENT_MET_",
+    "EVENT_BEAT_",
+)
+KEY_EVENT_NAMES = (
+    "EVENT_OAK_APPEARED_IN_PALLET",
+    "EVENT_FOLLOWED_OAK_INTO_LAB",
+    "EVENT_OAK_ASKED_TO_CHOOSE_MON",
+    "EVENT_GOT_STARTER",
+    "EVENT_BATTLED_RIVAL_IN_OAKS_LAB",
+    "EVENT_GOT_POKEBALLS_FROM_OAK",
+    "EVENT_GOT_POKEDEX",
+    "EVENT_GOT_TOWN_MAP",
+    "EVENT_GOT_OAKS_PARCEL",
+    "EVENT_OAK_GOT_PARCEL",
+)
+EVENT_FLAG_BYTE_COUNT = (max(DEFAULT_EVENT_CATALOG) // 8) + 1 if DEFAULT_EVENT_CATALOG else 0
 
 
 def _normalize_overlay_row(row: str) -> str:
@@ -465,6 +572,30 @@ def _build_pokedex_state(decoded_rows: list[str]) -> dict:
     }
 
 
+def _classify_binary_choice(prompt: str, snapshot: dict) -> tuple[str | None, str | None]:
+    lowered = prompt.lower()
+    if "nickname" in lowered:
+        return "nickname_prompt", None
+    if "save" in lowered:
+        return "save_prompt", None
+    offered_species = _detect_species_from_prompt(prompt)
+    if offered_species is not None and snapshot.get("party", {}).get("player_starter", 0) == 0:
+        return "starter_offer", offered_species
+    if any(keyword in lowered for keyword in ("want the", "take", "receive", "accept", "keep")):
+        return "gift_offer", offered_species
+    if any(keyword in lowered for keyword in ("sure", "okay", "ready")):
+        return "confirmation", None
+    return None, offered_species
+
+
+def _detect_species_from_prompt(prompt: str) -> str | None:
+    upper_prompt = prompt.upper()
+    for species_name in ("BULBASAUR", "CHARMANDER", "SQUIRTLE"):
+        if species_name in upper_prompt:
+            return species_name
+    return None
+
+
 def _build_interaction_state(snapshot: dict) -> dict:
     dialogue_active = snapshot["dialogue"]["active"] or snapshot["screen"]["message_box_present"]
     menu = snapshot["menu"]
@@ -479,7 +610,9 @@ def _build_interaction_state(snapshot: dict) -> dict:
             "prompt": naming["prompt"],
             "details": {
                 "screen_type": naming["screen_type"],
+                "name_kind": naming["screen_type"],
                 "current_text": naming["current_text"],
+                "base_name": naming["base_name"],
                 "submit_pending": naming["submit_pending"],
             },
         }
@@ -523,15 +656,25 @@ def _build_interaction_state(snapshot: dict) -> dict:
         return {"type": "battle_transition", "prompt": dialogue_text or None, "details": {}}
     upper_menu_items = {item.upper() for item in menu["visible_items"]}
     if menu["active"] and {"YES", "NO"}.issubset(upper_menu_items):
+        choice_kind, offered_species = _classify_binary_choice(dialogue_text, snapshot)
         return {
             "type": "binary_choice",
             "prompt": dialogue_text or None,
             "details": {
                 "visible_items": menu["visible_items"],
                 "selected_item_text": menu["selected_item_text"],
+                "choice_kind": choice_kind,
+                "offered_species": offered_species,
             },
         }
     if menu["active"] and "NEW NAME" in upper_menu_items and len(menu["visible_items"]) >= 2:
+        normalized_prompt = dialogue_text.lower()
+        if "your name" in normalized_prompt:
+            name_kind = "player"
+        elif "his name" in normalized_prompt or "rival" in normalized_prompt:
+            name_kind = "rival"
+        else:
+            name_kind = None
         return {
             "type": "preset_name_choice",
             "prompt": dialogue_text or None,
@@ -539,6 +682,7 @@ def _build_interaction_state(snapshot: dict) -> dict:
                 "visible_items": menu["visible_items"],
                 "selected_item_text": menu["selected_item_text"],
                 "has_custom_name_option": True,
+                "name_kind": name_kind,
             },
         }
     if menu["active"]:
@@ -747,6 +891,7 @@ def build_telemetry(pyboy, addresses: TelemetryAddresses) -> dict:
     party_state = _build_party_state(mem, addresses)
     inventory_state = _build_inventory_state(mem, addresses)
     trainer_state = _build_trainer_state(mem, addresses)
+    progress_state = _build_progress_state(mem, addresses, party_state=party_state)
     if in_battle:
         mode = "battle"
     elif pokedex_state["active"]:
@@ -770,6 +915,7 @@ def build_telemetry(pyboy, addresses: TelemetryAddresses) -> dict:
         "map": {
             "id": map_id,
             "script": mem[addresses["wCurMapScript"]],
+            "script_pointer": progress_state["script_pointer"],
             "x": mem[addresses["wXCoord"]],
             "y": mem[addresses["wYCoord"]],
             "width": map_width,
@@ -809,6 +955,7 @@ def build_telemetry(pyboy, addresses: TelemetryAddresses) -> dict:
         },
         "inventory": inventory_state,
         "trainer": trainer_state,
+        "progress": progress_state,
         "pokedex": pokedex_state,
         "naming": naming_state,
         "input": {

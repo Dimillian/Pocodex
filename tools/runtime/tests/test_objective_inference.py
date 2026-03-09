@@ -130,6 +130,58 @@ class ObjectiveInferenceTests(unittest.TestCase):
 
         self.assertTrue(objective_state["candidate_objectives"])
 
+    def test_affordances_include_semantic_labels_for_signs_and_story_objects(self) -> None:
+        map_info = MapInfo(
+            id=40,
+            const_name="OAKS_LAB",
+            display_name="Oak's Lab",
+            width=5,
+            height=6,
+            bg_events=[MapBgEvent(x=1, y=1, text_ref="TEXT_PALLETTOWN_SIGN")],
+            objects=[
+                MapObject(
+                    x=6,
+                    y=3,
+                    sprite="SPRITE_POKE_BALL",
+                    movement="STAY",
+                    facing="NONE",
+                    text_ref="TEXT_OAKSLAB_CHARMANDER_POKE_BALL",
+                    const_name="OAKSLAB_CHARMANDER_POKE_BALL",
+                ),
+                MapObject(
+                    x=5,
+                    y=2,
+                    sprite="SPRITE_OAK",
+                    movement="STAY",
+                    facing="DOWN",
+                    text_ref="TEXT_OAKSLAB_OAK1",
+                    const_name="OAKSLAB_OAK1",
+                ),
+            ],
+            walkable_grid=[[True for _ in range(12)] for _ in range(12)],
+            tile_grid=[[0 for _ in range(12)] for _ in range(12)],
+        )
+        snapshot = _snapshot(x=5, y=3)
+        snapshot["map"].update({"id": 40, "const_name": "OAKS_LAB", "name": "Oak's Lab", "width": 5, "height": 6})
+
+        affordances = build_affordances(
+            snapshot,
+            map_info=map_info,
+            map_catalog=_map_catalog(map_info),
+            progress_memory=fresh_progress_memory(),
+        )
+
+        sign = next(affordance for affordance in affordances if affordance["kind"] == "bg_event")
+        starter = next(affordance for affordance in affordances if affordance["id"] == "object:0")
+        oak = next(affordance for affordance in affordances if affordance["id"] == "object:1")
+
+        self.assertEqual(sign["label"], "Read the nearby sign.")
+        self.assertIn("sign", sign["identity_hints"])
+        self.assertEqual(starter["label"], "Choose the Charmander Poké Ball.")
+        self.assertIn("starter_choice_like", starter["identity_hints"])
+        self.assertEqual(oak["label"], "Talk to Professor Oak.")
+        self.assertIn("story_npc", oak["identity_hints"])
+
     def test_interaction_ready_entity_outranks_trigger_regions(self) -> None:
         snapshot = _snapshot(x=2, y=2)
         affordances = build_affordances(

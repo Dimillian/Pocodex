@@ -3,12 +3,13 @@ from __future__ import annotations
 import unittest
 
 from tools.runtime.agent_context import build_agent_context
-from tools.runtime.game_data import DEFAULT_ITEM_CATALOG, DEFAULT_SPECIES_CATALOG, KANTO_BADGE_NAMES
+from tools.runtime.game_data import DEFAULT_EVENT_CATALOG, DEFAULT_ITEM_CATALOG, DEFAULT_SPECIES_CATALOG, KANTO_BADGE_NAMES
 from tools.runtime.progress_memory import _made_progress
 from tools.runtime.telemetry import (
     TelemetryAddresses,
     _build_inventory_state,
     _build_party_state,
+    _build_progress_state,
     _build_trainer_state,
     _decode_bcd_money,
 )
@@ -83,6 +84,27 @@ class TrainerStateTelemetryTests(unittest.TestCase):
             [badge["name"] for badge in trainer["badges"] if badge["owned"]],
             [KANTO_BADGE_NAMES[0], KANTO_BADGE_NAMES[2], KANTO_BADGE_NAMES[7]],
         )
+
+    def test_build_progress_state_decodes_story_flags_and_script_pointer(self) -> None:
+        mem = [0x00] * 4096
+        addresses = TelemetryAddresses(
+            values={
+                "wEventFlags": 128,
+                "wCurMapScriptPtr": 64,
+            }
+        )
+        mem[addresses["wCurMapScriptPtr"]] = 0x34
+        mem[addresses["wCurMapScriptPtr"] + 1] = 0x12
+        for name in ("EVENT_OAK_APPEARED_IN_PALLET", "EVENT_GOT_STARTER", "EVENT_GOT_POKEDEX"):
+            index = next(index for index, event_name in DEFAULT_EVENT_CATALOG.items() if event_name == name)
+            mem[addresses["wEventFlags"] + (index // 8)] |= 1 << (index % 8)
+
+        progress = _build_progress_state(mem, addresses, party_state={"player_starter": 0})
+
+        self.assertEqual(progress["script_pointer"], 0x1234)
+        self.assertIn("EVENT_GOT_STARTER", progress["story_flags"])
+        self.assertTrue(progress["key_events"]["EVENT_GOT_POKEDEX"])
+        self.assertIn("starter_selected", progress["milestones"])
 
     def test_build_party_state(self) -> None:
         mem = [0x00] * 512
@@ -176,6 +198,13 @@ class TrainerStateTelemetryTests(unittest.TestCase):
                     {"name": "THUNDERBADGE", "owned": True},
                 ],
             },
+            "progress": {
+                "script_pointer": 0x1234,
+                "event_count": 3,
+                "story_flags": ["EVENT_OAK_APPEARED_IN_PALLET", "EVENT_GOT_STARTER", "EVENT_GOT_POKEDEX"],
+                "key_events": {"EVENT_GOT_STARTER": True, "EVENT_GOT_POKEDEX": True},
+                "milestones": ["oak_intro_triggered", "starter_selected", "received_pokedex"],
+            },
             "menu": {"active": False, "visible_items": [], "selected_item_text": None, "selected_index": None},
             "battle": {"ui_state": "none", "command_menu": {}, "move_menu": {}},
             "screen": {"message_box_present": False, "blank_ratio": 0.1, "decoded_rows": [""] * 18},
@@ -206,6 +235,10 @@ class TrainerStateTelemetryTests(unittest.TestCase):
         self.assertEqual(
             context["model_input"]["state"]["resources"]["trainer_summary"],
             "money=1234 badges=2 [BOULDERBADGE, THUNDERBADGE]",
+        )
+        self.assertEqual(
+            context["model_input"]["state"]["progress"]["milestones"],
+            ["oak_intro_triggered", "starter_selected", "received_pokedex"],
         )
 
     def test_hp_only_party_changes_do_not_count_as_progress(self) -> None:

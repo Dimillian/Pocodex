@@ -1015,6 +1015,20 @@ class RuntimeSession:
         if preferred_binary and preferred_binary in upper_items:
             return upper_items[preferred_binary]
 
+        interaction = snapshot.get("interaction") or {}
+        details = interaction.get("details") or {}
+        name_kind = details.get("name_kind")
+
+        if name_kind == "player":
+            target = self._select_preset_name_target(visible_items, self._decision_preference("player_name"))
+            if target is not None:
+                return target
+
+        if name_kind == "rival":
+            target = self._select_preset_name_target(visible_items, self._decision_preference("rival_name"))
+            if target is not None:
+                return target
+
         if "your name" in normalized_dialogue:
             target = self._select_preset_name_target(visible_items, self._decision_preference("player_name"))
             if target is not None:
@@ -1086,10 +1100,25 @@ class RuntimeSession:
         }
 
     def _determine_binary_choice(self, snapshot: dict) -> str | None:
-        prompt = ((snapshot.get("interaction") or {}).get("prompt") or "").lower()
+        interaction = snapshot.get("interaction") or {}
+        details = interaction.get("details") or {}
+        choice_kind = details.get("choice_kind")
+        offered_species = (details.get("offered_species") or "").upper() or None
+        prompt = (interaction.get("prompt") or "").lower()
         if not prompt:
             prompt = " ".join(snapshot["dialogue"]["visible_lines"]).lower()
 
+        if choice_kind == "nickname_prompt":
+            return "NO" if self._decision_preference("nickname_policy") == "decline" else "YES"
+        if choice_kind == "starter_offer":
+            preferred = str(self._decision_preference("starter_preference", "SQUIRTLE")).upper()
+            if snapshot["party"].get("player_starter"):
+                return "NO"
+            return "YES" if offered_species == preferred else "NO"
+        if choice_kind == "save_prompt":
+            return "YES"
+        if choice_kind == "confirmation":
+            return "YES"
         if "nickname" in prompt:
             return "NO" if self._decision_preference("nickname_policy") == "decline" else "YES"
         if "you want the" in prompt:
