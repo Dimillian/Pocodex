@@ -102,7 +102,7 @@ runtime read, which keeps the UI frame and the agent-visible state in sync.
   - current navigation objective
   - recent movement and transition results
 - recent events and recent action traces
-- planner state
+- decision state
 - allowed next actions for the current mode
 - a heuristic next-action hint
 - a JSON-only prompt string for an external LLM decision step

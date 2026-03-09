@@ -7,11 +7,11 @@ def build_agent_context(
     snapshot: dict[str, Any],
     traces: list[dict[str, Any]],
     *,
-    planner_state: dict[str, Any],
+    decision_state: dict[str, Any],
 ) -> dict[str, Any]:
     dialogue_context = build_dialogue_context(snapshot)
     allowed_actions = build_allowed_actions(snapshot)
-    heuristic_next_action = build_heuristic_hint(snapshot, planner_state)
+    heuristic_next_action = build_heuristic_hint(snapshot, decision_state)
     recent_events = [
         event["label"]
         for event in snapshot["events"]["recent"][-8:]
@@ -49,7 +49,7 @@ def build_agent_context(
             "battle": snapshot["battle"],
             "events": recent_events,
         },
-        "planner_state": planner_state,
+        "decision_state": decision_state,
         "recent_traces": recent_traces,
     }
 
@@ -81,7 +81,7 @@ def build_agent_context(
             },
             "events": recent_events,
         },
-        "planner_state": planner_state,
+        "decision_state": decision_state,
         "heuristic_next_action": heuristic_next_action,
         "allowed_actions": allowed_actions,
         "rules": [
@@ -195,7 +195,7 @@ def build_allowed_actions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     return deduped_actions
 
 
-def build_heuristic_hint(snapshot: dict[str, Any], planner_state: dict[str, Any]) -> dict[str, Any]:
+def build_heuristic_hint(snapshot: dict[str, Any], decision_state: dict[str, Any]) -> dict[str, Any]:
     mode = snapshot["mode"]
     interaction = snapshot.get("interaction") or {}
     interaction_type = interaction.get("type")
@@ -206,7 +206,7 @@ def build_heuristic_hint(snapshot: dict[str, Any], planner_state: dict[str, Any]
     dialogue_context = build_dialogue_context(snapshot)
     if interaction_type and interaction_type != "field":
         if interaction_type == "preset_name_choice":
-            recommended_item = _recommended_preset_name(snapshot, planner_state)
+            recommended_item = _recommended_preset_name(snapshot, decision_state)
             reason = "A preset name list is open; let the runtime choose a listed name instead of entering NEW NAME."
             if recommended_item:
                 reason = f"A preset name list is open; prefer the listed name '{recommended_item}' instead of NEW NAME."
@@ -243,7 +243,7 @@ def build_heuristic_hint(snapshot: dict[str, Any], planner_state: dict[str, Any]
                 "action": "follow_target",
                 "reason": f"Use local navigation to pursue {target_affordance['label']} based on the world-model ranking.",
             }
-        if planner_state.get("oak_intro_active"):
+        if _decision_flag(decision_state, "oak_intro_active"):
             return {"action": "press_a", "reason": "The intro script still appears active."}
         if objective:
             objective_label = objective.get("label", "the current objective")
@@ -295,7 +295,7 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
     failures = navigation.get("consecutive_failures", 0)
     map_name = observation["map"].get("name") or observation["map"].get("const_name") or f"Map {observation['map']['id']}"
     target_reason = navigation.get("target_reason") or "none"
-    recommended_preset_name = _recommended_preset_name(observation, context["planner_state"])
+    recommended_preset_name = _recommended_preset_name(observation, context["decision_state"])
     preset_name_line = "none"
     if recommended_preset_name:
         preset_name_line = recommended_preset_name
@@ -336,7 +336,7 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
     )
 
 
-def _recommended_preset_name(snapshot: dict[str, Any], planner_state: dict[str, Any]) -> str | None:
+def _recommended_preset_name(snapshot: dict[str, Any], decision_state: dict[str, Any]) -> str | None:
     interaction = snapshot.get("interaction") or {}
     if interaction.get("type") != "preset_name_choice":
         return None
@@ -351,9 +351,9 @@ def _recommended_preset_name(snapshot: dict[str, Any], planner_state: dict[str, 
 
     preferred_key = None
     if "your name" in normalized_dialogue:
-        preferred_key = str(planner_state.get("player_name") or "").upper() or None
+        preferred_key = str(_decision_preference(decision_state, "player_name") or "").upper() or None
     elif "his name" in normalized_dialogue or "rival" in normalized_dialogue:
-        preferred_key = str(planner_state.get("rival_name") or "").upper() or None
+        preferred_key = str(_decision_preference(decision_state, "rival_name") or "").upper() or None
 
     if preferred_key and preferred_key in upper_items:
         return upper_items[preferred_key]
@@ -362,6 +362,14 @@ def _recommended_preset_name(snapshot: dict[str, Any], planner_state: dict[str, 
         if item.upper() not in {"NEW NAME", "CANCEL", "EXIT"}:
             return item
     return None
+
+
+def _decision_preference(decision_state: dict[str, Any], key: str) -> Any:
+    return (decision_state.get("preferences") or {}).get(key)
+
+
+def _decision_flag(decision_state: dict[str, Any], key: str) -> bool:
+    return bool((decision_state.get("flags") or {}).get(key))
 
 
 def build_dialogue_context(snapshot: dict[str, Any]) -> dict[str, Any]:

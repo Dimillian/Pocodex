@@ -19,7 +19,7 @@ const affordancesBlockEl = document.getElementById("affordances-block");
 const memoryBlockEl = document.getElementById("memory-block");
 const decisionBlockEl = document.getElementById("decision-block");
 const allowedActionsBlockEl = document.getElementById("allowed-actions-block");
-const plannerStateBlockEl = document.getElementById("planner-state-block");
+const decisionStateBlockEl = document.getElementById("decision-state-block");
 const agentContextBlockEl = document.getElementById("agent-context-block");
 const agentPromptBlockEl = document.getElementById("agent-prompt-block");
 const agentStatusBlockEl = document.getElementById("agent-status-block");
@@ -465,8 +465,8 @@ function formatAllowedActionsBlock(agentContext) {
     .join("\n\n");
 }
 
-function formatPlannerStateBlock(agentContext) {
-  return formatJsonBlock(agentContext.planner_state, "No planner state");
+function formatDecisionStateBlock(agentContext) {
+  return formatJsonBlock(agentContext.decision_state, "No decision state");
 }
 
 function formatDialogueBlock(telemetry) {
@@ -647,7 +647,7 @@ async function refresh() {
     memoryBlockEl.textContent = formatMemoryBlock(telemetry);
     decisionBlockEl.textContent = formatDecisionBlock(agentContext, agentStatus);
     allowedActionsBlockEl.textContent = formatAllowedActionsBlock(agentContext);
-    plannerStateBlockEl.textContent = formatPlannerStateBlock(agentContext);
+    decisionStateBlockEl.textContent = formatDecisionStateBlock(agentContext);
     agentContextBlockEl.textContent = formatJsonBlock(agentContext, "No agent context");
     agentPromptBlockEl.textContent = agentContext.prompt || "No prompt";
     dialogueBlockEl.textContent = formatDialogueBlock(telemetry);

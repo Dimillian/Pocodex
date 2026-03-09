@@ -64,14 +64,7 @@ class RuntimeSession:
         self._run_event = Event()
         self._last_observation: dict | None = None
         self._event_log: deque[dict] = deque(maxlen=50)
-        self._planner_state = {
-            "oak_intro_active": False,
-            "field_move_index": 0,
-            "starter_preference": "SQUIRTLE",
-            "nickname_policy": "decline",
-            "player_name": "RED",
-            "rival_name": "BLUE",
-        }
+        self._decision_state = self._fresh_decision_state()
         self._navigation_state = self._fresh_navigation_state()
         self._progress_memory = fresh_progress_memory()
 
@@ -110,6 +103,41 @@ class RuntimeSession:
             self._runner.join(timeout=1)
         with self._lock:
             self.pyboy.stop(save=False)
+
+    @staticmethod
+    def _fresh_decision_state() -> dict:
+        return {
+            "flags": {
+                "oak_intro_active": False,
+            },
+            "exploration": {
+                "field_move_index": 0,
+            },
+            "preferences": {
+                "starter_preference": "SQUIRTLE",
+                "nickname_policy": "decline",
+                "player_name": "RED",
+                "rival_name": "BLUE",
+            },
+        }
+
+    def _decision_preferences(self) -> dict[str, str]:
+        return self._decision_state["preferences"]
+
+    def _decision_preference(self, key: str, default: str | None = None) -> str | None:
+        return self._decision_preferences().get(key, default)
+
+    def _decision_flag(self, key: str) -> bool:
+        return bool(self._decision_state["flags"].get(key))
+
+    def _set_decision_flag(self, key: str, value: bool) -> None:
+        self._decision_state["flags"][key] = value
+
+    def _field_move_index(self) -> int:
+        return int(self._decision_state["exploration"].get("field_move_index", 0))
+
+    def _advance_field_move_index(self) -> None:
+        self._decision_state["exploration"]["field_move_index"] = (self._field_move_index() + 1) % 4
 
     def _run_loop(self) -> None:
         frame_duration = 1 / 60
@@ -180,7 +208,7 @@ class RuntimeSession:
                 map_catalog=self.map_catalog,
                 navigation_state=self._navigation_state,
                 progress_memory=self._progress_memory,
-                planner_state=self._planner_state,
+                decision_state=self._decision_state,
             )
             self._update_progress_memory(before=before, after=after)
             if record_trace:
@@ -223,7 +251,7 @@ class RuntimeSession:
                     map_catalog=self.map_catalog,
                     navigation_state=self._navigation_state,
                     progress_memory=self._progress_memory,
-                    planner_state=self._planner_state,
+                    decision_state=self._decision_state,
                 )
                 self._update_progress_memory(before=before, after=after)
                 trace = self._build_action_trace(
@@ -390,7 +418,7 @@ class RuntimeSession:
         start_state = self._capture_runtime_state()
         start_key = self._search_state_key(snapshot)
         start_rank = milestone_rank(snapshot.get("navigation", {}).get("milestone"))
-        frontier: list[tuple[int, int, int, dict, tuple[bytes, dict, dict], list[str]]] = []
+        frontier: list[tuple[int, int, int, dict, tuple[bytes, dict, dict, dict], list[str]]] = []
         best_distance = start_distance
         best_path: list[str] = []
         sequence = 0
@@ -444,7 +472,7 @@ class RuntimeSession:
 
     def planner_step(self, goal: str = "progress") -> dict:
         snapshot = self.telemetry()
-        self._update_planner_state(snapshot)
+        self._update_decision_state(snapshot)
         decision = self._choose_planner_action(snapshot, goal)
 
         if decision["type"] == "routine":
@@ -471,7 +499,7 @@ class RuntimeSession:
                 or (snapshot["map"]["x"], snapshot["map"]["y"]) != (result["map"]["x"], result["map"]["y"]),
             },
         }
-        self._update_planner_state(result)
+        self._update_decision_state(result)
         self._update_move_strategy(decision, planner_trace["verification"]["passed"])
         self._record_trace(planner_trace)
         result["planner"] = {"goal": goal, "decision": decision, "trace": planner_trace}
@@ -513,7 +541,7 @@ class RuntimeSession:
         return build_agent_context(
             snapshot,
             traces,
-            planner_state=dict(self._planner_state),
+            decision_state=dict(self._decision_state),
         )
 
     def execute_agent_action(
@@ -694,7 +722,7 @@ class RuntimeSession:
             }
         return choose_field_action(
             snapshot,
-            planner_state=self._planner_state,
+            decision_state=self._decision_state,
             map_catalog=self.map_catalog,
             preferred_affordance_id=affordance_id,
         )
@@ -740,7 +768,7 @@ class RuntimeSession:
 
     def _simulate_direction_from_state(
         self,
-        base_state: tuple[bytes, dict, dict],
+        base_state: tuple[bytes, dict, dict, dict],
         snapshot: dict,
         button: str,
     ) -> dict | None:
@@ -883,12 +911,12 @@ class RuntimeSession:
             return upper_items[preferred_binary]
 
         if "your name" in normalized_dialogue:
-            target = self._select_preset_name_target(visible_items, self._planner_state["player_name"])
+            target = self._select_preset_name_target(visible_items, self._decision_preference("player_name"))
             if target is not None:
                 return target
 
         if "his name" in normalized_dialogue or "rival" in normalized_dialogue:
-            target = self._select_preset_name_target(visible_items, self._planner_state["rival_name"])
+            target = self._select_preset_name_target(visible_items, self._decision_preference("rival_name"))
             if target is not None:
                 return target
 
@@ -958,9 +986,9 @@ class RuntimeSession:
             prompt = " ".join(snapshot["dialogue"]["visible_lines"]).lower()
 
         if "nickname" in prompt:
-            return "NO" if self._planner_state["nickname_policy"] == "decline" else "YES"
+            return "NO" if self._decision_preference("nickname_policy") == "decline" else "YES"
         if "you want the" in prompt:
-            preferred = self._planner_state["starter_preference"].lower()
+            preferred = str(self._decision_preference("starter_preference", "SQUIRTLE")).lower()
             return "YES" if preferred in prompt else "NO"
         if "save" in prompt:
             return "YES"
@@ -1021,11 +1049,11 @@ class RuntimeSession:
         naming = snapshot["naming"]
         screen_type = naming.get("screen_type")
         if screen_type == "player":
-            return self._planner_state["player_name"]
+            return str(self._decision_preference("player_name", "RED"))
         if screen_type == "rival":
-            return self._planner_state["rival_name"]
+            return str(self._decision_preference("rival_name", "BLUE"))
         base_name = naming.get("base_name") or "MON"
-        if self._planner_state["nickname_policy"] == "decline":
+        if self._decision_preference("nickname_policy") == "decline":
             return base_name
         return base_name
 
@@ -1105,7 +1133,7 @@ class RuntimeSession:
             "reason": "Battle state is in transition, so wait for the next clear prompt.",
         }
 
-    def _update_planner_state(self, snapshot: dict) -> None:
+    def _update_decision_state(self, snapshot: dict) -> None:
         dialogue = " ".join(snapshot["dialogue"]["visible_lines"]).lower()
         intro_markers = (
             "hello there",
@@ -1125,16 +1153,16 @@ class RuntimeSession:
         )
 
         if any(marker in dialogue for marker in intro_markers):
-            self._planner_state["oak_intro_active"] = True
+            self._set_decision_flag("oak_intro_active", True)
         if any(marker in dialogue for marker in gameplay_markers):
-            self._planner_state["oak_intro_active"] = False
+            self._set_decision_flag("oak_intro_active", False)
 
     def _update_move_strategy(self, decision: dict, passed: bool) -> None:
         name = decision.get("name", "")
         if not name.startswith("move_"):
             return
         if not passed:
-            self._planner_state["field_move_index"] = (self._planner_state["field_move_index"] + 1) % 4
+            self._advance_field_move_index()
 
     def list_states(self) -> dict:
         with self._lock:
@@ -1247,16 +1275,16 @@ class RuntimeSession:
             return (
                 buffer.getvalue(),
                 deepcopy(self._navigation_state),
-                deepcopy(self._planner_state),
+                deepcopy(self._decision_state),
                 capture_progress_memory(self._progress_memory),
             )
 
     def _restore_runtime_state(self, state: tuple[bytes, dict, dict, dict]) -> None:
-        state_bytes, navigation_state, planner_state, progress_memory = state
+        state_bytes, navigation_state, decision_state, progress_memory = state
         with self._lock:
             self.pyboy.load_state(io.BytesIO(state_bytes))
             self._navigation_state = deepcopy(navigation_state)
-            self._planner_state = deepcopy(planner_state)
+            self._decision_state = deepcopy(decision_state)
             self._progress_memory = capture_progress_memory(progress_memory)
 
     def _snapshot_unlocked(
@@ -1284,7 +1312,7 @@ class RuntimeSession:
             map_catalog=self.map_catalog,
             navigation_state=self._navigation_state,
             progress_memory=self._progress_memory,
-            planner_state=self._planner_state,
+            decision_state=self._decision_state,
         )
         return snapshot
 

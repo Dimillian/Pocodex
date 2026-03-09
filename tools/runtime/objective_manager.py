@@ -93,7 +93,7 @@ def build_current_objective(
     map_info: MapInfo | None,
     map_catalog: MapCatalog,
     affordances: list[dict[str, Any]],
-    planner_state: dict[str, Any],
+    decision_state: dict[str, Any],
 ) -> dict[str, Any] | None:
     if map_info is None:
         return None
@@ -146,7 +146,7 @@ def build_current_objective(
         )
 
     if const_name == "OAKS_LAB":
-        preferred_starter = (planner_state.get("starter_preference") or "SQUIRTLE").upper()
+        preferred_starter = str(_decision_preference(decision_state, "starter_preference") or "SQUIRTLE").upper()
         starter_text_ref = {
             "CHARMANDER": "TEXT_OAKSLAB_CHARMANDER_POKE_BALL",
             "SQUIRTLE": "TEXT_OAKSLAB_SQUIRTLE_POKE_BALL",
@@ -263,3 +263,7 @@ def _affordance_distance(current: tuple[int, int], affordance: dict[str, Any]) -
     if target is None:
         return 999
     return abs(current[0] - target["x"]) + abs(current[1] - target["y"])
+
+
+def _decision_preference(decision_state: dict[str, Any], key: str) -> Any:
+    return (decision_state.get("preferences") or {}).get(key)

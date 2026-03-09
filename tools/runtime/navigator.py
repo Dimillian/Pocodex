@@ -33,7 +33,7 @@ def enrich_snapshot_with_navigation(
     map_catalog: MapCatalog,
     navigation_state: dict[str, Any],
     progress_memory: dict[str, Any],
-    planner_state: dict[str, Any] | None = None,
+    decision_state: dict[str, Any] | None = None,
 ) -> None:
     map_info = map_catalog.get_by_id(snapshot["map"]["id"])
     snapshot["map"]["const_name"] = map_info.const_name if map_info else None
@@ -91,7 +91,7 @@ def enrich_snapshot_with_navigation(
         map_info=map_info,
         map_catalog=map_catalog,
         affordances=affordances,
-        planner_state=planner_state or {},
+        decision_state=decision_state or {},
     )
     world_model = build_world_model(
         snapshot,
@@ -132,7 +132,7 @@ def enrich_snapshot_with_navigation(
 def choose_field_action(
     snapshot: dict[str, Any],
     *,
-    planner_state: dict[str, Any],
+    decision_state: dict[str, Any],
     map_catalog: MapCatalog,
     preferred_affordance_id: str | None = None,
 ) -> dict[str, Any]:
@@ -159,7 +159,7 @@ def choose_field_action(
         if target_affordance["kind"] == "warp":
             if path:
                 return _path_step(path, target_affordance["label"])
-            return _step_toward_point(snapshot, planner_state, target_affordance, exact=True)
+            return _step_toward_point(snapshot, decision_state, target_affordance, exact=True)
         if target_affordance["kind"] == "trigger_region":
             if path:
                 return _path_step(path, target_affordance["label"])
@@ -167,20 +167,20 @@ def choose_field_action(
         if target_affordance["kind"] == "object":
             if path:
                 return _path_step(path, target_affordance["label"])
-            return _step_toward_object(snapshot, planner_state, target_affordance)
+            return _step_toward_object(snapshot, decision_state, target_affordance)
         if target_affordance["kind"] == "bg_event":
             if path:
                 return _path_step(path, target_affordance["label"])
-            return _step_toward_point(snapshot, planner_state, target_affordance, exact=False)
+            return _step_toward_point(snapshot, decision_state, target_affordance, exact=False)
 
     if objective is None:
-        return _fallback_exploration(snapshot, planner_state)
+        return _fallback_exploration(snapshot, decision_state)
     path = _path_to_objective(snapshot, objective, map_info=map_info, map_catalog=map_catalog)
 
     if objective["kind"] == "warp":
         if path:
             return _path_step(path, objective["label"])
-        return _step_toward_point(snapshot, planner_state, objective, exact=True)
+        return _step_toward_point(snapshot, decision_state, objective, exact=True)
 
     if objective["kind"] == "trigger_region":
         if path:
@@ -190,9 +190,9 @@ def choose_field_action(
     if objective["kind"] == "object":
         if path:
             return _path_step(path, objective["label"])
-        return _step_toward_object(snapshot, planner_state, objective)
+        return _step_toward_object(snapshot, decision_state, objective)
 
-    return _fallback_exploration(snapshot, planner_state)
+    return _fallback_exploration(snapshot, decision_state)
 
 
 def _resolve_target_affordance(snapshot: dict[str, Any], preferred_affordance_id: str | None) -> dict[str, Any] | None:
@@ -316,7 +316,7 @@ def update_navigation_state(
 
 def _step_toward_point(
     snapshot: dict[str, Any],
-    planner_state: dict[str, Any],
+    decision_state: dict[str, Any],
     objective: dict[str, Any],
     *,
     exact: bool,
@@ -347,7 +347,7 @@ def _step_toward_point(
     )
 
 
-def _step_toward_object(snapshot: dict[str, Any], planner_state: dict[str, Any], objective: dict[str, Any]) -> dict[str, Any]:
+def _step_toward_object(snapshot: dict[str, Any], decision_state: dict[str, Any], objective: dict[str, Any]) -> dict[str, Any]:
     current = (snapshot["map"]["x"], snapshot["map"]["y"])
     object_pos = (objective["target"]["x"], objective["target"]["y"])
     if _manhattan(current, object_pos) == 1:
@@ -377,7 +377,7 @@ def _step_toward_object(snapshot: dict[str, Any], planner_state: dict[str, Any],
             reason=objective["label"],
         )
 
-    return _fallback_exploration(snapshot, planner_state)
+    return _fallback_exploration(snapshot, decision_state)
 
 
 def _step_toward_region(snapshot: dict[str, Any], objective: dict[str, Any]) -> dict[str, Any]:
@@ -572,7 +572,7 @@ def _directional_step(snapshot: dict[str, Any], *, target: tuple[int, int], reas
     }
 
 
-def _fallback_exploration(snapshot: dict[str, Any], planner_state: dict[str, Any]) -> dict[str, Any]:
+def _fallback_exploration(snapshot: dict[str, Any], decision_state: dict[str, Any]) -> dict[str, Any]:
     failures = snapshot.get("navigation", {}).get("consecutive_failures", 0)
     if failures >= 2:
         return {
@@ -581,13 +581,17 @@ def _fallback_exploration(snapshot: dict[str, Any], planner_state: dict[str, Any
             "reason": "Movement has failed multiple times; pause to re-observe.",
         }
     directions = ("down", "left", "up", "right")
-    index = planner_state.get("field_move_index", 0) % len(directions)
+    index = _field_move_index(decision_state) % len(directions)
     direction = directions[index]
     return {
         "type": "routine",
         "name": f"move_{direction}",
         "reason": f"No specific overworld objective is known, so probe movement by stepping {direction}.",
     }
+
+
+def _field_move_index(decision_state: dict[str, Any]) -> int:
+    return int((decision_state.get("exploration") or {}).get("field_move_index", 0))
 def _target_display_name(const_name: str, map_catalog: MapCatalog) -> str:
     if const_name == "LAST_MAP":
         return "previous map"
