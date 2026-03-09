@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .agent_service import AgentController
 from .codex_client import CodexAppServerClient
-from .session import RuntimeSession
+from .runtime_app import RuntimeApp
 from .state_models import (
     ActionRequest,
     AgentActionRequest,
@@ -26,7 +26,7 @@ from .state_models import (
     TickRequest,
 )
 
-SESSION: RuntimeSession | None = None
+RUNTIME_APP: RuntimeApp | None = None
 AGENT_CONTROLLER: AgentController | None = None
 
 
@@ -38,18 +38,18 @@ async def lifespan(_: FastAPI):
         controller = AGENT_CONTROLLER
         if controller is not None:
             controller.shutdown()
-        session = SESSION
-        if session is not None:
-            session.stop()
+        runtime_app = RUNTIME_APP
+        if runtime_app is not None:
+            runtime_app.stop()
 
 
 app = FastAPI(title="pokered runtime", lifespan=lifespan)
 
 
-def get_session() -> RuntimeSession:
-    if SESSION is None:
-        raise RuntimeError("Runtime session has not been initialized")
-    return SESSION
+def get_runtime_app() -> RuntimeApp:
+    if RUNTIME_APP is None:
+        raise RuntimeError("Runtime app has not been initialized")
+    return RUNTIME_APP
 
 
 def get_agent_controller() -> AgentController:
@@ -60,8 +60,7 @@ def get_agent_controller() -> AgentController:
 
 @app.get("/health")
 def health() -> dict:
-    session = get_session()
-    status = session.status()
+    status = get_runtime_app().status()
     return {"ok": True, **status}
 
 
@@ -72,50 +71,50 @@ def root() -> FileResponse:
 
 @app.post("/pause")
 def pause() -> dict:
-    return get_session().pause()
+    return get_runtime_app().pause()
 
 
 @app.post("/resume")
 def resume() -> dict:
-    return get_session().resume()
+    return get_runtime_app().resume()
 
 
 @app.get("/states")
 def list_states() -> dict:
-    return get_session().list_states()
+    return get_runtime_app().list_states()
 
 
 @app.post("/save_state")
 def save_state(request: StateSlotRequest) -> dict:
-    return get_session().save_state(request.slot)
+    return get_runtime_app().save_state(request.slot)
 
 
 @app.post("/load_state")
 def load_state(request: StateSlotRequest) -> dict:
     try:
-        return get_session().load_state(request.slot)
+        return get_runtime_app().load_state(request.slot)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @app.post("/reset_runtime_memory")
 def reset_runtime_memory() -> dict:
-    return get_session().reset_runtime_memory()
+    return get_runtime_app().reset_runtime_memory()
 
 
 @app.get("/telemetry")
 def telemetry() -> dict:
-    return get_session().telemetry()
+    return get_runtime_app().telemetry()
 
 
 @app.get("/snapshot")
 def snapshot() -> dict:
-    return get_session().snapshot_bundle()
+    return get_runtime_app().snapshot_bundle()
 
 
 @app.get("/agent_context")
 def agent_context() -> dict:
-    return get_session().agent_context()
+    return get_runtime_app().agent_context()
 
 
 @app.get("/agent/status")
@@ -126,7 +125,7 @@ def agent_status() -> dict:
 @app.get("/agent/models")
 def agent_models() -> dict:
     try:
-        return {"data": CodexAppServerClient.list_models(cwd=get_session().repo_root)}
+        return {"data": CodexAppServerClient.list_models(cwd=get_runtime_app().repo_root)}
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -167,7 +166,7 @@ def agent_prompt_clear() -> dict:
 @app.post("/execute_action")
 def execute_action(request: AgentActionRequest) -> dict:
     try:
-        return get_session().execute_agent_action(
+        return get_runtime_app().execute_agent_action(
             request.action,
             request.reason,
             affordance_id=request.affordance_id,
@@ -179,18 +178,18 @@ def execute_action(request: AgentActionRequest) -> dict:
 
 @app.get("/frame")
 def frame() -> Response:
-    return Response(get_session().frame_png(), media_type="image/png")
+    return Response(get_runtime_app().frame_png(), media_type="image/png")
 
 
 @app.post("/tick")
 def tick(request: TickRequest) -> dict:
-    return get_session().tick(request.frames)
+    return get_runtime_app().tick(request.frames)
 
 
 @app.post("/action")
 def action(request: ActionRequest) -> dict:
     try:
-        return get_session().tap(
+        return get_runtime_app().tap(
             request.button,
             hold_frames=request.hold_frames,
             settle_frames=request.settle_frames,
@@ -202,7 +201,7 @@ def action(request: ActionRequest) -> dict:
 @app.post("/sequence")
 def sequence(request: SequenceRequest) -> dict:
     try:
-        return get_session().sequence([step.model_dump() for step in request.steps])
+        return get_runtime_app().sequence([step.model_dump() for step in request.steps])
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -210,20 +209,20 @@ def sequence(request: SequenceRequest) -> dict:
 @app.post("/routine")
 def routine(request: RoutineRequest) -> dict:
     try:
-        return get_session().run_routine(request.name)
+        return get_runtime_app().run_routine(request.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/traces")
 def traces(limit: int = 50) -> dict:
-    return get_session().recent_traces(limit=limit)
+    return get_runtime_app().recent_traces(limit=limit)
 
 
 @app.post("/planner_step")
 def planner_step(request: PlannerStepRequest) -> dict:
     try:
-        return get_session().planner_step(goal=request.goal)
+        return get_runtime_app().planner_step(goal=request.goal)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -237,15 +236,15 @@ def main() -> None:
     parser.add_argument("--auto-run", action="store_true")
     args = parser.parse_args()
 
-    global SESSION
-    SESSION = RuntimeSession(
+    global RUNTIME_APP
+    RUNTIME_APP = RuntimeApp(
         repo_root=Path(__file__).resolve().parents[2],
         rom_name=args.rom,
         boot_frames=args.boot_frames,
         auto_run=args.auto_run,
     )
     global AGENT_CONTROLLER
-    AGENT_CONTROLLER = AgentController(session=SESSION, repo_root=SESSION.repo_root)
+    AGENT_CONTROLLER = AgentController(session=RUNTIME_APP, repo_root=RUNTIME_APP.repo_root)
     app.mount("/static", StaticFiles(directory=Path(__file__).with_name("static")), name="static")
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")

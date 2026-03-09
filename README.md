@@ -97,6 +97,11 @@ The runtime currently provides:
 - recent action traces
 - a built-in Codex-driven agent controller
 
+Internally, the runtime now boots through
+[`tools/runtime/runtime_app.py`](tools/runtime/runtime_app.py) and is split into
+specialized modules for emulator lifecycle, snapshot assembly, trace recording,
+input execution, and planner/objective flow rather than a single session file.
+
 See [**tools/runtime/README.md**](tools/runtime/README.md) for endpoints,
 runtime commands, and the agent-control flow.
 

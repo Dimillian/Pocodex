@@ -27,9 +27,20 @@ for playing and instrumenting the game.
 
 ## Current Runtime Architecture
 
-- `tools/runtime/session.py`
-  Owns the PyBoy instance, frame stepping, input execution, save/load state,
-  telemetry snapshots, trace logging, and basic deterministic routines.
+- `tools/runtime/runtime_app.py`
+  Composition root for the programmable runtime used by the HTTP server.
+- `tools/runtime/runtime_core.py`
+  Owns ROM/symbol validation, PyBoy boot, run-loop lifecycle, frame caching,
+  and raw save/load state bytes.
+- `tools/runtime/action_executor.py`
+  Owns validated button execution, settle logic, save/load helpers, and
+  deterministic routines.
+- `tools/runtime/objective_runner.py`
+  Owns planner-step execution plus objective, target, and interaction macros.
+- `tools/runtime/snapshot_service.py`
+  Builds telemetry, snapshot bundles, event logs, and agent context payloads.
+- `tools/runtime/trace_recorder.py`
+  Verifies action outcomes and writes JSONL traces.
 - `tools/runtime/telemetry.py`
   Reads symbol-backed RAM state and produces structured telemetry.
 - `tools/runtime/agent_context.py`
@@ -49,7 +60,8 @@ That means:
 
 - parse map metadata from the disassembly
 - expose map names, warps, exits, and movement-facing state
-- add a small navigator/world-policy layer outside `session.py`
+- continue tightening navigator/world-policy boundaries around the composed
+  runtime modules instead of growing orchestration files again
 - make Codex capable of leaving the intro path and navigating intentionally
 
 Before adding more UI polish or transport changes, prefer work that improves

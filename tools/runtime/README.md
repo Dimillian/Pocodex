@@ -59,6 +59,19 @@ Available ROM values:
 - `red`
 - `blue-debug`
 
+## Internal Architecture
+
+The public runtime entrypoint is `tools/runtime/runtime_app.py`. It composes a
+small set of focused modules:
+
+- `runtime_core.py` for emulator lifecycle, frame reads, and raw save/load
+- `runtime_memory.py` for mutable shared runtime state
+- `snapshot_service.py` for telemetry, snapshots, event logs, and agent context
+- `trace_recorder.py` for action verification and JSONL traces
+- `interaction_policy.py` for menu/dialogue/battle/planner decision helpers
+- `action_executor.py` for validated input execution and deterministic routines
+- `objective_runner.py` for planner-step and objective-following macros
+
 ## Endpoints
 
 - `GET /health`

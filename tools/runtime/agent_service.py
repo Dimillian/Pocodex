@@ -6,10 +6,26 @@ import json
 from pathlib import Path
 from threading import Event, Lock, Thread
 import time
-from typing import Any
+from typing import Any, Protocol
 
 from .codex_client import CodexAppServerClient
-from .session import RuntimeSession
+
+
+class RuntimeAgentAPI(Protocol):
+    rom_name: str
+
+    def agent_context(self) -> dict[str, Any]:
+        ...
+
+    def execute_agent_action(
+        self,
+        action_id: str,
+        reason: str | None = None,
+        *,
+        affordance_id: str | None = None,
+        objective_id: str | None = None,
+    ) -> dict[str, Any]:
+        ...
 
 
 def _timestamp() -> str:
@@ -17,7 +33,7 @@ def _timestamp() -> str:
 
 
 class AgentController:
-    def __init__(self, session: RuntimeSession, *, repo_root: Path) -> None:
+    def __init__(self, session: RuntimeAgentAPI, *, repo_root: Path) -> None:
         self.session = session
         self.repo_root = repo_root
         self.logs_dir = repo_root / ".runtime-traces" / "agent-ui" / session.rom_name
