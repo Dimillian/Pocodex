@@ -71,6 +71,9 @@ class RuntimeSession:
         self._stop_event = Event()
         self._run_event = Event()
         self._last_observation: dict | None = None
+        self._cached_frame_png: bytes | None = None
+        self._cached_frame_base64: str | None = None
+        self._cached_frame_count: int | None = None
         self._event_log: deque[dict] = deque(maxlen=50)
         self._decision_state = self._fresh_decision_state()
         self._navigation_state = self._fresh_navigation_state()
@@ -624,11 +627,10 @@ class RuntimeSession:
     def snapshot_bundle(self) -> dict:
         with self._lock:
             telemetry = self._snapshot_unlocked()
-            buffer = io.BytesIO()
-            self.pyboy.screen.image.save(buffer, format="PNG")
+            _, frame_png_base64 = self._frame_png_payload_unlocked()
             return {
                 "telemetry": telemetry,
-                "frame_png_base64": base64.b64encode(buffer.getvalue()).decode("ascii"),
+                "frame_png_base64": frame_png_base64,
             }
 
     def recent_traces(self, limit: int = 50) -> dict:
@@ -1367,6 +1369,7 @@ class RuntimeSession:
         with self._lock:
             with path.open("rb") as handle:
                 self.pyboy.load_state(handle)
+            self._invalidate_frame_cache_unlocked()
             self._reset_runtime_memory_unlocked()
             metadata = self._load_state_metadata(path)
             snapshot = self._snapshot_unlocked(
@@ -1420,6 +1423,7 @@ class RuntimeSession:
         state_bytes, navigation_state, decision_state, progress_memory = state
         with self._lock:
             self.pyboy.load_state(io.BytesIO(state_bytes))
+            self._invalidate_frame_cache_unlocked()
             self._navigation_state = deepcopy(navigation_state)
             self._decision_state = deepcopy(decision_state)
             self._progress_memory = capture_progress_memory(progress_memory)
@@ -1677,8 +1681,30 @@ class RuntimeSession:
         self._progress_memory = fresh_progress_memory()
         self._decision_state = self._fresh_decision_state()
 
+    def _invalidate_frame_cache_unlocked(self) -> None:
+        self._cached_frame_png = None
+        self._cached_frame_base64 = None
+        self._cached_frame_count = None
+
     def frame_png(self) -> bytes:
         with self._lock:
-            buffer = io.BytesIO()
-            self.pyboy.screen.image.save(buffer, format="PNG")
-            return buffer.getvalue()
+            frame_png, _ = self._frame_png_payload_unlocked()
+            return frame_png
+
+    def _frame_png_payload_unlocked(self) -> tuple[bytes, str]:
+        frame_count = self.pyboy.frame_count
+        if (
+            self._cached_frame_png is not None
+            and self._cached_frame_base64 is not None
+            and self._cached_frame_count == frame_count
+        ):
+            return self._cached_frame_png, self._cached_frame_base64
+
+        buffer = io.BytesIO()
+        self.pyboy.screen.image.save(buffer, format="PNG")
+        frame_png = buffer.getvalue()
+        frame_base64 = base64.b64encode(frame_png).decode("ascii")
+        self._cached_frame_png = frame_png
+        self._cached_frame_base64 = frame_base64
+        self._cached_frame_count = frame_count
+        return frame_png, frame_base64

@@ -56,12 +56,16 @@ const buttonMap = {
   Shift: "select",
 };
 
-const REFRESH_INTERVAL_MS = 30;
+const FRAME_REFRESH_INTERVAL_MS = 33;
+const PANEL_REFRESH_INTERVAL_MS = 250;
 
 let lastFrame = null;
 let lastRefreshAt = null;
-let refreshInFlight = false;
-let refreshQueued = false;
+let latestTelemetry = null;
+let snapshotRefreshInFlight = false;
+let snapshotRefreshQueued = false;
+let panelRefreshInFlight = false;
+let panelRefreshQueued = false;
 let latestAgentStatus = null;
 let agentModelCatalog = [];
 let agentModelsLoaded = false;
@@ -85,7 +89,8 @@ async function press(button) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ button }),
   });
-  await refresh();
+  await refreshSnapshot();
+  await refreshPanels();
 }
 
 async function stepFrames(frames) {
@@ -94,12 +99,14 @@ async function stepFrames(frames) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ frames }),
   });
-  await refresh();
+  await refreshSnapshot();
+  await refreshPanels();
 }
 
 async function setRunning(path) {
   await fetchJson(path, { method: "POST" });
-  await refresh();
+  await refreshSnapshot();
+  await refreshPanels();
 }
 
 async function stateAction(path, slot = "quick") {
@@ -108,12 +115,14 @@ async function stateAction(path, slot = "quick") {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ slot }),
   });
-  await refresh();
+  await refreshSnapshot();
+  await refreshPanels();
 }
 
 async function runtimeAction(path) {
   await fetchJson(path, { method: "POST" });
-  await refresh();
+  await refreshSnapshot();
+  await refreshPanels();
 }
 
 async function runRoutine(name) {
@@ -122,7 +131,8 @@ async function runRoutine(name) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ name }),
   });
-  await refresh();
+  await refreshSnapshot();
+  await refreshPanels();
 }
 
 async function plannerStep(goal = "progress") {
@@ -131,7 +141,8 @@ async function plannerStep(goal = "progress") {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ goal }),
   });
-  await refresh();
+  await refreshSnapshot();
+  await refreshPanels();
 }
 
 async function startAgent(mode = "codex") {
@@ -146,12 +157,14 @@ async function startAgent(mode = "codex") {
       reasoning_effort: mode === "codex" ? (agentReasoningSelectEl.value || null) : null,
     }),
   });
-  await refresh();
+  await refreshSnapshot();
+  await refreshPanels();
 }
 
 async function stopAgent() {
   await fetchJson("/agent/stop", { method: "POST" });
-  await refresh();
+  await refreshSnapshot();
+  await refreshPanels();
 }
 
 async function queueAgentPrompt() {
@@ -165,12 +178,12 @@ async function queueAgentPrompt() {
     body: JSON.stringify({ prompt }),
   });
   agentPromptInputEl.value = "";
-  await refresh();
+  await refreshPanels();
 }
 
 async function clearAgentPrompt() {
   await fetchJson("/agent/prompt/clear", { method: "POST" });
-  await refresh();
+  await refreshPanels();
 }
 
 function updateFrame(framePngBase64) {
@@ -1046,78 +1059,107 @@ function renderAgentPanel(agentStatus) {
   renderAgentConfig(agentStatus);
 }
 
-async function refresh() {
-  if (refreshInFlight) {
-    refreshQueued = true;
+function renderRuntimeSnapshot(health, snapshot) {
+  const telemetry = snapshot.telemetry;
+  latestTelemetry = telemetry;
+  const now = performance.now();
+
+  statusPillEl.textContent = health.running ? "running" : "paused";
+  statusPillEl.dataset.running = health.running ? "true" : "false";
+  frameLabelEl.textContent = `frame ${telemetry.frame}`;
+  if (
+    health.running
+    && lastFrame !== null
+    && lastRefreshAt !== null
+    && telemetry.frame >= lastFrame
+  ) {
+    const elapsedMs = now - lastRefreshAt;
+    const frameDelta = telemetry.frame - lastFrame;
+    const fps = elapsedMs > 0 ? (frameDelta * 1000) / elapsedMs : 0;
+    fpsLabelEl.textContent = `${fps.toFixed(1)} fps`;
+  } else {
+    fpsLabelEl.textContent = health.running ? "..." : "0.0 fps";
+  }
+  lastFrame = telemetry.frame;
+  lastRefreshAt = now;
+
+  updateFrame(snapshot.frame_png_base64);
+  statusBlockEl.textContent = formatStateSummary(telemetry, health.running);
+  mapBlockEl.textContent = formatWorldSnapshot(telemetry);
+  targetBlockEl.textContent = formatTargetBlock(telemetry);
+  interactionBlockEl.textContent = formatInteractionBlock(telemetry);
+  renderMinimap(telemetry);
+  affordancesBlockEl.textContent = formatAffordancesBlock(telemetry);
+  memoryBlockEl.textContent = formatMemoryBlock(telemetry);
+  dialogueBlockEl.textContent = formatDialogueBlock(telemetry);
+  menuBlockEl.textContent = formatMenuBlock(telemetry);
+  battleBlockEl.textContent = formatBattleBlock(telemetry);
+  trainerBlockEl.textContent = formatTrainerBlock(telemetry);
+  eventsBlockEl.textContent = formatEventsBlock(telemetry);
+  decodedRowsBlockEl.textContent = telemetry.screen.decoded_rows.join("\n");
+  tilemapBlockEl.textContent = telemetry.screen.tilemap_rows_hex.join("\n");
+}
+
+async function refreshSnapshot() {
+  if (snapshotRefreshInFlight) {
+    snapshotRefreshQueued = true;
     return;
   }
-  refreshInFlight = true;
+  snapshotRefreshInFlight = true;
 
   try {
-    const [health, snapshot, states, traces, agentContext, agentStatus] = await Promise.all([
+    const [health, snapshot] = await Promise.all([
       fetchJson("/health"),
       fetchJson("/snapshot"),
+    ]);
+    renderRuntimeSnapshot(health, snapshot);
+
+  } finally {
+    snapshotRefreshInFlight = false;
+    if (snapshotRefreshQueued) {
+      snapshotRefreshQueued = false;
+      queueMicrotask(() => {
+        refreshSnapshot().catch((error) => console.error(error));
+      });
+    }
+  }
+}
+
+async function refreshPanels() {
+  if (panelRefreshInFlight) {
+    panelRefreshQueued = true;
+    return;
+  }
+  panelRefreshInFlight = true;
+
+  try {
+    if (latestTelemetry === null) {
+      return;
+    }
+    const [states, traces, agentContext, agentStatus] = await Promise.all([
       fetchJson("/states"),
       fetchJson("/traces?limit=16"),
       fetchJson("/agent_context"),
       fetchJson("/agent/status"),
     ]);
-    const telemetry = snapshot.telemetry;
-    const now = performance.now();
 
-    statusPillEl.textContent = health.running ? "running" : "paused";
-    statusPillEl.dataset.running = health.running ? "true" : "false";
-    frameLabelEl.textContent = `frame ${telemetry.frame}`;
-    if (
-      health.running
-      && lastFrame !== null
-      && lastRefreshAt !== null
-      && telemetry.frame >= lastFrame
-    ) {
-      const elapsedMs = now - lastRefreshAt;
-      const frameDelta = telemetry.frame - lastFrame;
-      const fps = elapsedMs > 0 ? (frameDelta * 1000) / elapsedMs : 0;
-      fpsLabelEl.textContent = `${fps.toFixed(1)} fps`;
-    } else {
-      fpsLabelEl.textContent = health.running ? "..." : "0.0 fps";
-    }
-    lastFrame = telemetry.frame;
-    lastRefreshAt = now;
-
-    statusBlockEl.textContent = formatStateSummary(telemetry, health.running);
-    mapBlockEl.textContent = formatWorldSnapshot(telemetry);
-    statesBlockEl.textContent = formatStatesAndInput(states, telemetry);
-    targetBlockEl.textContent = formatTargetBlock(telemetry);
-    interactionBlockEl.textContent = formatInteractionBlock(telemetry);
-    renderMinimap(telemetry);
-    affordancesBlockEl.textContent = formatAffordancesBlock(telemetry);
-    memoryBlockEl.textContent = formatMemoryBlock(telemetry);
+    statesBlockEl.textContent = formatStatesAndInput(states, latestTelemetry);
     decisionBlockEl.textContent = formatDecisionBlock(agentContext, agentStatus);
     allowedActionsBlockEl.textContent = formatAllowedActionsBlock(agentContext);
     decisionStateBlockEl.textContent = formatDecisionStateBlock(agentContext);
     agentContextBlockEl.textContent = formatJsonBlock(agentContext, "No agent context");
     agentPromptBlockEl.textContent = agentContext.prompt || "No prompt";
-    dialogueBlockEl.textContent = formatDialogueBlock(telemetry);
-    menuBlockEl.textContent = formatMenuBlock(telemetry);
-    battleBlockEl.textContent = formatBattleBlock(telemetry);
-    trainerBlockEl.textContent = formatTrainerBlock(telemetry);
-    eventsBlockEl.textContent = formatEventsBlock(telemetry);
     tracesBlockEl.textContent = formatTracesBlock(traces);
     agentLogBlockEl.textContent = formatAgentLog(agentStatus);
-    decodedRowsBlockEl.textContent = telemetry.screen.decoded_rows.join("\n");
-    tilemapBlockEl.textContent = telemetry.screen.tilemap_rows_hex.join("\n");
-
     stateSlotLabelEl.textContent = "slot: quick";
     agentStateLabelEl.textContent = `agent: ${agentStatus.state}`;
     renderAgentPanel(agentStatus);
-
-    updateFrame(snapshot.frame_png_base64);
   } finally {
-    refreshInFlight = false;
-    if (refreshQueued) {
-      refreshQueued = false;
+    panelRefreshInFlight = false;
+    if (panelRefreshQueued) {
+      panelRefreshQueued = false;
       queueMicrotask(() => {
-        refresh().catch((error) => console.error(error));
+        refreshPanels().catch((error) => console.error(error));
       });
     }
   }
@@ -1164,10 +1206,15 @@ window.addEventListener("keydown", async (event) => {
 });
 
 setInterval(() => {
-  refresh().catch((error) => console.error(error));
-}, REFRESH_INTERVAL_MS);
+  refreshSnapshot().catch((error) => console.error(error));
+}, FRAME_REFRESH_INTERVAL_MS);
+
+setInterval(() => {
+  refreshPanels().catch((error) => console.error(error));
+}, PANEL_REFRESH_INTERVAL_MS);
 
 ensureAgentModelsLoaded().catch((error) => {
   console.error("Failed to load agent models", error);
 });
-refresh().catch((error) => console.error(error));
+refreshSnapshot().catch((error) => console.error(error));
+refreshPanels().catch((error) => console.error(error));
