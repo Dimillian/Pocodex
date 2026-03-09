@@ -43,6 +43,17 @@ class AgentController:
             "last_result": None,
             "last_error": None,
             "last_response_text": None,
+            "model": None,
+            "model_provider": None,
+            "reasoning_effort": None,
+            "token_usage": {
+                "last": None,
+                "total": None,
+                "model_context_window": None,
+            },
+            "pending_prompt": None,
+            "last_consumed_prompt": None,
+            "last_consumed_prompt_at": None,
             "started_at": None,
             "updated_at": _timestamp(),
         }
@@ -84,6 +95,14 @@ class AgentController:
                     "last_result": None,
                     "last_error": None,
                     "last_response_text": None,
+                    "model": None,
+                    "model_provider": None,
+                    "reasoning_effort": None,
+                    "token_usage": {
+                        "last": None,
+                        "total": None,
+                        "model_context_window": None,
+                    },
                     "started_at": _timestamp(),
                     "updated_at": _timestamp(),
                 }
@@ -132,6 +151,37 @@ class AgentController:
         if thread is not None and thread.is_alive():
             thread.join(timeout=1)
 
+    def queue_prompt(self, prompt: str) -> dict[str, Any]:
+        normalized = prompt.strip()
+        if not normalized:
+            raise ValueError("Prompt must not be empty")
+        with self._lock:
+            existing = self._status.get("pending_prompt")
+            if existing:
+                normalized = f"{existing}\n\n{normalized}"
+            self._status["pending_prompt"] = normalized
+            self._status["updated_at"] = _timestamp()
+        self._append_log(
+            {
+                "timestamp": _timestamp(),
+                "kind": "agent_prompt_queued",
+                "preview": normalized[:240],
+            }
+        )
+        return self.status()
+
+    def clear_prompt(self) -> dict[str, Any]:
+        with self._lock:
+            self._status["pending_prompt"] = None
+            self._status["updated_at"] = _timestamp()
+        self._append_log(
+            {
+                "timestamp": _timestamp(),
+                "kind": "agent_prompt_cleared",
+            }
+        )
+        return self.status()
+
     def _run_loop(self, *, mode: str, step_delay_ms: int, max_steps: int | None, fresh_thread: bool) -> None:
         codex_client = None
         try:
@@ -146,6 +196,10 @@ class AgentController:
                 self._update_status(
                     state="running",
                     thread_id=codex_client.thread_id,
+                    model=codex_client.model,
+                    model_provider=codex_client.model_provider,
+                    reasoning_effort=codex_client.reasoning_effort,
+                    token_usage=codex_client.token_usage,
                 )
             elif mode == "heuristic":
                 self._update_status(state="running")
@@ -161,7 +215,15 @@ class AgentController:
                     break
 
                 context = self.session.agent_context()
-                decision, codex_meta = self._decide_action(context, mode=mode, codex_client=codex_client)
+                operator_prompt = self._pending_prompt() if mode == "codex" else None
+                decision, codex_meta = self._decide_action(
+                    context,
+                    mode=mode,
+                    codex_client=codex_client,
+                    operator_prompt=operator_prompt,
+                )
+                if operator_prompt:
+                    self._mark_prompt_consumed(operator_prompt)
                 action_id = decision["action"]
                 reason = decision["reason"]
                 self._update_status(
@@ -171,6 +233,10 @@ class AgentController:
                     last_response_text=codex_meta.get("response_text"),
                     thread_id=codex_meta.get("thread_id"),
                     turn_id=codex_meta.get("turn_id"),
+                    model=codex_meta.get("model"),
+                    model_provider=codex_meta.get("model_provider"),
+                    reasoning_effort=codex_meta.get("reasoning_effort"),
+                    token_usage=codex_meta.get("token_usage"),
                 )
                 tool_result = codex_meta.get("tool_result")
                 if mode == "codex" and tool_result and tool_result.get("success"):
@@ -274,6 +340,7 @@ class AgentController:
         *,
         mode: str,
         codex_client: CodexAppServerClient | None,
+        operator_prompt: str | None = None,
     ) -> tuple[dict[str, str], dict[str, Any]]:
         if mode == "heuristic":
             return (
@@ -285,13 +352,17 @@ class AgentController:
             )
         if codex_client is None:
             raise ValueError("codex mode requires an active Codex app-server client")
-        result = codex_client.decide_action(context)
+        result = codex_client.decide_action(context, operator_prompt=operator_prompt)
         return result["decision"], {
             "thread_id": result["thread_id"],
             "turn_id": result["turn_id"],
             "response_text": result["response_text"],
             "events": result["events"],
             "tool_result": result.get("tool_result"),
+            "model": result.get("model"),
+            "model_provider": result.get("model_provider"),
+            "reasoning_effort": result.get("reasoning_effort"),
+            "token_usage": result.get("token_usage"),
         }
 
     def _update_status(self, **changes: Any) -> None:
@@ -305,6 +376,32 @@ class AgentController:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record) + "\n")
+
+    def _pending_prompt(self) -> str | None:
+        with self._lock:
+            prompt = self._status.get("pending_prompt")
+            return prompt if prompt else None
+
+    def _mark_prompt_consumed(self, prompt: str) -> None:
+        with self._lock:
+            current_prompt = self._status.get("pending_prompt")
+            if current_prompt == prompt:
+                next_prompt = None
+            elif isinstance(current_prompt, str) and current_prompt.startswith(f"{prompt}\n\n"):
+                next_prompt = current_prompt[len(prompt) + 2 :]
+            else:
+                next_prompt = current_prompt
+            self._status["pending_prompt"] = next_prompt
+            self._status["last_consumed_prompt"] = prompt
+            self._status["last_consumed_prompt_at"] = _timestamp()
+            self._status["updated_at"] = _timestamp()
+        self._append_log(
+            {
+                "timestamp": _timestamp(),
+                "kind": "agent_prompt_consumed",
+                "preview": prompt[:240],
+            }
+        )
 
     def _handle_codex_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         reason = arguments.get("reason")

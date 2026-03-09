@@ -30,6 +30,17 @@ const tilemapBlockEl = document.getElementById("tilemap-block");
 const stateSlotLabelEl = document.getElementById("state-slot-label");
 const agentStateLabelEl = document.getElementById("agent-state-label");
 const agentFreshThreadToggleEl = document.getElementById("agent-fresh-thread-toggle");
+const agentPromptInputEl = document.getElementById("agent-prompt-input");
+const agentQueuedPromptBlockEl = document.getElementById("agent-queued-prompt-block");
+const agentLastPromptBlockEl = document.getElementById("agent-last-prompt-block");
+const agentStatStateEl = document.getElementById("agent-stat-state");
+const agentStatStateCaptionEl = document.getElementById("agent-stat-state-caption");
+const agentStatModelEl = document.getElementById("agent-stat-model");
+const agentStatModelCaptionEl = document.getElementById("agent-stat-model-caption");
+const agentStatReasoningEl = document.getElementById("agent-stat-reasoning");
+const agentStatReasoningCaptionEl = document.getElementById("agent-stat-reasoning-caption");
+const agentStatThreadEl = document.getElementById("agent-stat-thread");
+const agentStatThreadCaptionEl = document.getElementById("agent-stat-thread-caption");
 
 const buttonMap = {
   ArrowUp: "up",
@@ -131,6 +142,25 @@ async function stopAgent() {
   await refresh();
 }
 
+async function queueAgentPrompt() {
+  const prompt = agentPromptInputEl.value.trim();
+  if (!prompt) {
+    return;
+  }
+  await fetchJson("/agent/prompt", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+  agentPromptInputEl.value = "";
+  await refresh();
+}
+
+async function clearAgentPrompt() {
+  await fetchJson("/agent/prompt/clear", { method: "POST" });
+  await refresh();
+}
+
 function updateFrame(framePngBase64) {
   if (framePngBase64) {
     frameEl.src = `data:image/png;base64,${framePngBase64}`;
@@ -155,6 +185,83 @@ function formatJsonBlock(value, emptyLabel = "none") {
     return emptyLabel;
   }
   return JSON.stringify(value, null, 2);
+}
+
+function formatTokenUsageInline(usage) {
+  if (!usage) {
+    return "none";
+  }
+  return `in ${usage.input_tokens ?? 0} out ${usage.output_tokens ?? 0} reason ${usage.reasoning_output_tokens ?? 0} cached ${usage.cached_input_tokens ?? 0} total ${usage.total_tokens ?? 0}`;
+}
+
+function formatInteger(value, emptyLabel = "none") {
+  return typeof value === "number" ? value.toLocaleString() : emptyLabel;
+}
+
+function formatContextUsage(tokenUsage) {
+  const inputTokens = tokenUsage?.last?.input_tokens;
+  const contextWindow = tokenUsage?.model_context_window;
+  if (
+    typeof inputTokens !== "number"
+    || typeof contextWindow !== "number"
+    || contextWindow <= 0
+  ) {
+    return "unknown";
+  }
+  return `${inputTokens.toLocaleString()}/${contextWindow.toLocaleString()} (${((inputTokens / contextWindow) * 100).toFixed(1)}%)`;
+}
+
+function formatPreview(text, limit = 120) {
+  if (!text) {
+    return "none";
+  }
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, limit - 1)}…`;
+}
+
+function shortId(value, prefixLength = 8) {
+  if (!value) {
+    return "none";
+  }
+  return value.length <= prefixLength ? value : value.slice(0, prefixLength);
+}
+
+function describeAgentState(agentStatus) {
+  if (agentStatus.running) {
+    if (agentStatus.current_action) {
+      return `Executing ${agentStatus.current_action}`;
+    }
+    return "Loop active";
+  }
+  if (agentStatus.state === "error") {
+    return "Stopped on error";
+  }
+  if (agentStatus.state === "completed") {
+    return "Step limit reached";
+  }
+  if (agentStatus.pending_prompt) {
+    return "Queued note ready";
+  }
+  return "Waiting";
+}
+
+function formatAgentSessionBlock(agentStatus) {
+  const lastUsage = agentStatus.token_usage?.last;
+  const contextWindow = agentStatus.token_usage?.model_context_window;
+  return [
+    `Thread        ${shortId(agentStatus.thread_id, 12)}`,
+    `Turn          ${shortId(agentStatus.turn_id, 12)}`,
+    `Fresh thread  ${agentStatus.fresh_thread ? "yes" : "no"}`,
+    "",
+    `Context win   ${formatInteger(contextWindow, "unknown")}`,
+    `Prompt load   ${formatContextUsage(agentStatus.token_usage)}`,
+    `Cache reuse   ${formatInteger(lastUsage?.cached_input_tokens)}`,
+    `Last usage    ${formatTokenUsageInline(agentStatus.token_usage?.last)}`,
+    `Total usage   ${formatTokenUsageInline(agentStatus.token_usage?.total)}`,
+  ].join("\n");
 }
 
 function formatStateSummary(telemetry, running) {
@@ -467,6 +574,9 @@ function formatDecisionBlock(agentContext, agentStatus) {
   return [
     `agent state     ${agentStatus.state}`,
     `mode            ${agentStatus.mode ?? "none"}`,
+    `model           ${agentStatus.model ?? "none"}`,
+    `reasoning       ${agentStatus.reasoning_effort ?? "default"}`,
+    `context         ${formatContextUsage(agentStatus.token_usage)}`,
     `fresh thread    ${agentStatus.fresh_thread ?? false}`,
     `steps           ${agentStatus.step_count}`,
     `thread          ${agentStatus.thread_id ?? "none"}`,
@@ -481,6 +591,7 @@ function formatDecisionBlock(agentContext, agentStatus) {
     "",
     `heuristic       ${heuristic.action ?? "none"}`,
     `heuristic why   ${heuristic.reason ?? "none"}`,
+    `queued prompt   ${formatPreview(agentStatus.pending_prompt)}`,
     agentStatus.last_error ? "" : null,
     agentStatus.last_error ? `error           ${agentStatus.last_error}` : null,
   ].filter(Boolean).join("\n");
@@ -625,9 +736,43 @@ function formatAgentLog(agentStatus) {
       if (entry.kind === "agent_controller_stop_requested") {
         return "STOP requested";
       }
+      if (entry.kind === "agent_prompt_queued") {
+        return `PROMPT queued\n${entry.preview ?? ""}`;
+      }
+      if (entry.kind === "agent_prompt_consumed") {
+        return `PROMPT consumed\n${entry.preview ?? ""}`;
+      }
+      if (entry.kind === "agent_prompt_cleared") {
+        return "PROMPT cleared";
+      }
       return entry.kind;
     })
     .join("\n\n");
+}
+
+function renderAgentPanel(agentStatus) {
+  const queuedPrompt = agentStatus.pending_prompt || "";
+  const lastPrompt = agentStatus.last_consumed_prompt || "";
+
+  agentStatStateEl.textContent = agentStatus.state ?? "idle";
+  agentStatStateCaptionEl.textContent = describeAgentState(agentStatus);
+
+  agentStatModelEl.textContent = agentStatus.model ?? "none";
+  agentStatModelCaptionEl.textContent = agentStatus.model_provider
+    ? `Provider: ${agentStatus.model_provider}`
+    : "No provider";
+
+  agentStatReasoningEl.textContent = agentStatus.reasoning_effort ?? "default";
+  agentStatReasoningCaptionEl.textContent = `Mode: ${agentStatus.mode ?? "none"} • Steps: ${agentStatus.step_count ?? 0}`;
+
+  agentStatThreadEl.textContent = shortId(agentStatus.thread_id);
+  agentStatThreadCaptionEl.textContent = agentStatus.turn_id
+    ? `Turn ${shortId(agentStatus.turn_id)}`
+    : "No active turn";
+
+  agentQueuedPromptBlockEl.textContent = queuedPrompt || "No queued note.";
+  agentLastPromptBlockEl.textContent = lastPrompt || "No note sent yet.";
+  agentStatusBlockEl.textContent = formatAgentSessionBlock(agentStatus);
 }
 
 async function refresh() {
@@ -693,16 +838,7 @@ async function refresh() {
 
     stateSlotLabelEl.textContent = "slot: quick";
     agentStateLabelEl.textContent = `agent: ${agentStatus.state}`;
-    agentStatusBlockEl.textContent = [
-      `running        ${agentStatus.running}`,
-      `state          ${agentStatus.state}`,
-      `mode           ${agentStatus.mode ?? "none"}`,
-      `fresh thread   ${agentStatus.fresh_thread ?? false}`,
-      `step count     ${agentStatus.step_count}`,
-      `current        ${agentStatus.current_action ?? "idle"}`,
-      `thread         ${agentStatus.thread_id ?? "none"}`,
-      `turn           ${agentStatus.turn_id ?? "none"}`,
-    ].join("\n");
+    renderAgentPanel(agentStatus);
 
     updateFrame(snapshot.frame_png_base64);
   } finally {
@@ -731,6 +867,8 @@ document.getElementById("planner-step-btn").addEventListener("click", () => plan
 document.getElementById("agent-start-btn").addEventListener("click", () => startAgent("codex"));
 document.getElementById("agent-stop-btn").addEventListener("click", () => stopAgent());
 document.getElementById("agent-start-heuristic-btn").addEventListener("click", () => startAgent("heuristic"));
+document.getElementById("agent-queue-prompt-btn").addEventListener("click", () => queueAgentPrompt());
+document.getElementById("agent-clear-prompt-btn").addEventListener("click", () => clearAgentPrompt());
 document.querySelectorAll("[data-routine]").forEach((buttonEl) => {
   buttonEl.addEventListener("click", () => runRoutine(buttonEl.dataset.routine));
 });

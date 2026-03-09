@@ -67,25 +67,57 @@
             </div>
           </div>
           <div class="card-grid card-grid--controls">
-            <section class="control-card">
-              <div class="section-heading">
-                <h2>Runtime</h2>
-                <span id="state-slot-label" class="muted-pill">slot: quick</span>
-              </div>
-              <div class="action-grid action-grid--runtime">
-                <button id="resume-btn">Resume</button>
-                <button id="pause-btn">Pause</button>
-                <button id="tick-btn">Step 1f</button>
-                <button id="tick-60-btn">Step 60f</button>
-                <button id="save-state-btn">Save State</button>
-                <button id="load-state-btn">Load State</button>
-                <button id="reset-memory-btn">Reset Memory</button>
-                <button id="planner-step-btn">Planner Step</button>
-              </div>
-            </section>
+            <div class="controls-left-stack">
+              <section class="control-card">
+                <div class="section-heading">
+                  <h2>Runtime</h2>
+                  <span id="state-slot-label" class="muted-pill">slot: quick</span>
+                </div>
+                <div class="action-grid action-grid--runtime">
+                  <button id="resume-btn">Resume</button>
+                  <button id="pause-btn">Pause</button>
+                  <button id="tick-btn">Step 1f</button>
+                  <button id="tick-60-btn">Step 60f</button>
+                  <button id="save-state-btn">Save State</button>
+                  <button id="load-state-btn">Load State</button>
+                  <button id="reset-memory-btn">Reset Memory</button>
+                  <button id="planner-step-btn">Planner Step</button>
+                </div>
+              </section>
 
-            <section class="control-card">
-              <div class="section-heading">
+              <section class="control-card control-card--agent-runtime">
+                <div class="section-heading section-heading--agent-panel">
+                  <h2>Agent Runtime</h2>
+                  <span class="muted-pill">live</span>
+                </div>
+                <div class="agent-summary-grid agent-summary-grid--telemetry">
+                  <article class="agent-stat-card agent-stat-card--primary">
+                    <span class="agent-stat-label">State</span>
+                    <strong id="agent-stat-state" class="agent-stat-value">idle</strong>
+                    <span id="agent-stat-state-caption" class="agent-stat-caption">Waiting.</span>
+                  </article>
+                  <article class="agent-stat-card">
+                    <span class="agent-stat-label">Model</span>
+                    <strong id="agent-stat-model" class="agent-stat-value">none</strong>
+                    <span id="agent-stat-model-caption" class="agent-stat-caption">No provider.</span>
+                  </article>
+                  <article class="agent-stat-card">
+                    <span class="agent-stat-label">Reasoning</span>
+                    <strong id="agent-stat-reasoning" class="agent-stat-value">default</strong>
+                    <span id="agent-stat-reasoning-caption" class="agent-stat-caption">Mode: none</span>
+                  </article>
+                  <article class="agent-stat-card">
+                    <span class="agent-stat-label">Thread</span>
+                    <strong id="agent-stat-thread" class="agent-stat-value">none</strong>
+                    <span id="agent-stat-thread-caption" class="agent-stat-caption">No active turn.</span>
+                  </article>
+                </div>
+                <pre id="agent-status-block" class="agent-detail-block agent-detail-block--compact"></pre>
+              </section>
+            </div>
+
+            <section class="control-card control-card--agent-control">
+              <div class="section-heading section-heading--agent-panel">
                 <h2>Agent</h2>
                 <span id="agent-state-label" class="muted-pill">agent: idle</span>
               </div>
@@ -94,11 +126,41 @@
                 <button id="agent-stop-btn">Stop Agent</button>
                 <button id="agent-start-heuristic-btn">Start Heuristic Agent</button>
               </div>
-              <label class="checkbox-row">
+              <label class="agent-toggle-card agent-toggle-card--compact" for="agent-fresh-thread-toggle">
+                <div class="agent-toggle-copy">
+                  <span class="agent-mini-label">Thread policy</span>
+                  <div class="agent-toggle-title">Fresh thread on start</div>
+                </div>
                 <input id="agent-fresh-thread-toggle" type="checkbox" checked>
-                <span>Fresh Codex thread on start</span>
               </label>
-              <pre id="agent-status-block" class="compact-block"></pre>
+              <div class="agent-composer">
+                <div class="agent-compose-grid">
+                  <label class="field-stack agent-compose-field" for="agent-prompt-input">
+                    <span class="agent-mini-label">Next-turn prompt</span>
+                    <div class="agent-input-shell">
+                      <textarea
+                        id="agent-prompt-input"
+                        class="prompt-input prompt-input--agent"
+                        placeholder="Tell the model what to focus on next."
+                      ></textarea>
+                    </div>
+                  </label>
+                  <div class="agent-compose-actions">
+                    <button id="agent-queue-prompt-btn">Queue</button>
+                    <button id="agent-clear-prompt-btn">Clear</button>
+                  </div>
+                </div>
+                <div class="agent-prompt-inline">
+                  <div class="agent-prompt-inline-item">
+                    <span class="agent-mini-label">Queued</span>
+                    <pre id="agent-queued-prompt-block" class="agent-inline-preview">No queued note.</pre>
+                  </div>
+                  <div class="agent-prompt-inline-item">
+                    <span class="agent-mini-label">Last sent</span>
+                    <pre id="agent-last-prompt-block" class="agent-inline-preview">No note sent yet.</pre>
+                  </div>
+                </div>
+              </div>
             </section>
           </div>
         </div>

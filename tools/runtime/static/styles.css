@@ -200,18 +200,248 @@ body {
   grid-column: span 2;
 }
 
-.checkbox-row {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--muted);
-  font-size: 12px;
+.action-grid--prompt {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.checkbox-row input {
-  width: 16px;
-  height: 16px;
+.field-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.controls-left-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.control-card--agent-control,
+.control-card--agent-runtime {
+  gap: 12px;
+  padding: 14px;
+  background:
+    radial-gradient(circle at top right, rgba(53, 196, 255, 0.1), transparent 24%),
+    linear-gradient(180deg, rgba(12, 28, 54, 0.98), rgba(8, 18, 36, 0.98));
+}
+
+.control-card--agent-control,
+.control-card--agent-runtime {
+  min-height: 0;
+}
+
+.section-heading--agent-panel {
+  align-items: center;
+}
+
+.agent-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.agent-summary-grid--telemetry {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.agent-stat-card,
+.agent-toggle-card {
+  min-width: 0;
+  border-radius: 18px;
+  border: 1px solid rgba(76, 127, 198, 0.26);
+  background:
+    linear-gradient(180deg, rgba(9, 20, 41, 0.98), rgba(5, 12, 25, 0.98));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.agent-stat-card {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-stat-card--primary {
+  background:
+    radial-gradient(circle at top left, rgba(53, 196, 255, 0.18), transparent 40%),
+    linear-gradient(180deg, rgba(14, 35, 68, 0.98), rgba(6, 15, 31, 0.98));
+  border-color: rgba(53, 196, 255, 0.34);
+}
+
+.agent-stat-label,
+.agent-mini-label {
+  color: rgba(147, 166, 198, 0.88);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-stat-value {
+  color: #f8fbff;
+  font-size: 16px;
+  line-height: 1.05;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.agent-stat-caption,
+.agent-card-copy {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.agent-toggle-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "eyebrow eyebrow"
+    "title toggle";
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
+  cursor: pointer;
+}
+
+.agent-toggle-copy {
+  display: contents;
+}
+
+.agent-toggle-copy .agent-mini-label {
+  grid-area: eyebrow;
+}
+
+.agent-toggle-copy .agent-toggle-title {
+  grid-area: title;
+}
+
+.agent-toggle-title {
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.agent-toggle-card input {
+  grid-area: toggle;
+  width: 18px;
+  height: 18px;
   accent-color: var(--accent);
+  flex: 0 0 auto;
+}
+
+.agent-toggle-card--compact {
+  min-height: 62px;
+  padding: 10px 12px;
+}
+
+.agent-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-compose-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.agent-compose-field {
+  min-width: 0;
+}
+
+.agent-compose-actions {
+  display: grid;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.field-label {
+  color: #cfe3ff;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-input-shell {
+  padding: 2px;
+  border-radius: 22px;
+  background:
+    linear-gradient(135deg, rgba(53, 196, 255, 0.42), rgba(53, 196, 255, 0.08) 42%, rgba(255, 255, 255, 0.02));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.prompt-input {
+  width: 100%;
+  min-height: 132px;
+  padding: 16px 18px;
+  resize: vertical;
+  border-radius: 18px;
+  border: 0;
+  background:
+    radial-gradient(circle at top left, rgba(53, 196, 255, 0.06), transparent 34%),
+    linear-gradient(180deg, rgba(5, 10, 19, 0.98), rgba(3, 7, 15, 0.98));
+  color: var(--text);
+  font: inherit;
+  line-height: 1.45;
+}
+
+.prompt-input--agent {
+  min-height: 84px;
+  max-height: 120px;
+}
+
+.prompt-input:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 1px rgba(53, 196, 255, 0.34);
+}
+
+.prompt-input::placeholder {
+  color: rgba(190, 206, 229, 0.56);
+}
+
+.agent-prompt-inline {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.agent-prompt-inline-item {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-detail-block,
+.agent-inline-preview {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(2, 8, 18, 0.86);
+  border: 1px solid rgba(76, 127, 198, 0.16);
+  color: #d7e7ff;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-inline-preview {
+  min-height: 42px;
+  max-height: 62px;
+  overflow: auto;
+}
+
+.agent-detail-block {
+  max-height: 220px;
+  overflow: auto;
+}
+
+.agent-detail-block--compact {
+  min-height: 140px;
 }
 
 .action-grid--routines,
@@ -244,7 +474,7 @@ body {
 
 .card-grid--controls {
   grid-template-columns: 1.04fr 1fr;
-  align-items: stretch;
+  align-items: start;
 }
 
 .card-grid--observe {
@@ -485,6 +715,10 @@ pre {
   .card-grid--agent-brain {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .agent-summary-grid--telemetry {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 1220px) {
@@ -515,6 +749,19 @@ pre {
 @media (max-width: 980px) {
   .card-grid--agent-brain {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .agent-summary-grid--telemetry {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .agent-compose-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-compose-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: none;
   }
 
   .card--minimap-wide {
@@ -569,6 +816,7 @@ pre {
 
   .action-grid--runtime,
   .action-grid--agent,
+  .action-grid--prompt,
   .action-grid--routines,
   .dpad-grid,
   .card-grid--observe,
@@ -589,11 +837,18 @@ pre {
   .action-grid--agent button:first-child {
     grid-column: auto;
   }
+
+  .agent-prompt-inline,
+  .agent-summary-grid--telemetry {
+    grid-template-columns: 1fr;
+  }
+
 }
 
 @media (max-width: 520px) {
   .action-grid--runtime,
   .action-grid--agent,
+  .action-grid--prompt,
   .action-grid--routines,
   .dpad-grid,
   .card-grid--observe,

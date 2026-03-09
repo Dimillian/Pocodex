@@ -68,6 +68,8 @@ Available ROM values:
 - `GET /agent/status`
 - `POST /agent/start`
 - `POST /agent/stop`
+- `POST /agent/prompt`
+- `POST /agent/prompt/clear`
 - `POST /execute_action`
 - `GET /frame`
 - `POST /tick`
@@ -117,7 +119,14 @@ runtime read, which keeps the UI frame and the agent-visible state in sync.
 `GET /agent/status` returns the live state of the built-in UI agent controller,
 including whether it is running, the current Codex thread/turn ids, the last
 decision, the last execution result, whether it started from a fresh Codex
-thread, and recent controller logs.
+thread, current model/provider/reasoning-effort metadata, latest token usage
+and context-window telemetry reported by app-server, queued web-UI prompt
+overrides, and recent controller logs.
+
+`POST /agent/prompt` queues a free-form operator note that will be injected
+into the next Codex decision turn started by the built-in agent. Queued notes
+are cleared automatically after that turn begins. `POST /agent/prompt/clear`
+removes any queued note without sending it.
 
 The control layer currently includes:
 
@@ -138,6 +147,8 @@ curl http://127.0.0.1:8765/agent_context | jq
 curl http://127.0.0.1:8765/agent/status | jq
 curl -X POST http://127.0.0.1:8765/agent/start -H 'content-type: application/json' -d '{"mode":"codex","step_delay_ms":100,"fresh_thread":true}'
 curl -X POST http://127.0.0.1:8765/agent/stop
+curl -X POST http://127.0.0.1:8765/agent/prompt -H 'content-type: application/json' -d '{"prompt":"Prioritize leaving the house and interact with any visible sign first."}'
+curl -X POST http://127.0.0.1:8765/agent/prompt/clear
 curl -X POST http://127.0.0.1:8765/execute_action -H 'content-type: application/json' -d '{"action":"press_start","reason":"open the title menu"}'
 curl -o frame.png http://127.0.0.1:8765/frame
 curl -X POST http://127.0.0.1:8765/tick -H 'content-type: application/json' -d '{"frames": 60}'
@@ -195,6 +206,7 @@ The root page serves a minimal browser shell with:
 - pause/resume and step controls
 - start/stop controls for the built-in Codex agent
 - fresh-thread toggle for Codex agent starts
+- queued free-form prompt input for the next Codex turn
 - quick save/load state controls
 - planner-step control for deterministic progression
 - routine buttons for common gameplay actions
@@ -205,7 +217,8 @@ The root page serves a minimal browser shell with:
 - recent event log
 - recent action traces
 - compact agent context view
-- live agent status and recent agent-step log
+- live agent status with current model/reasoning and token/context telemetry
+- recent agent-step log
 - decoded screen rows
 - raw tilemap rows in hex
 

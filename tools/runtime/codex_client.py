@@ -78,6 +78,14 @@ class CodexAppServerClient:
         self.fresh_thread = fresh_thread
         self.tool_handler = tool_handler
         self.thread_id: str | None = None
+        self.model: str | None = None
+        self.model_provider: str | None = None
+        self.reasoning_effort: str | None = None
+        self.token_usage: dict[str, Any] = {
+            "last": None,
+            "total": None,
+            "model_context_window": None,
+        }
         self._process: subprocess.Popen[str] | None = None
         self._pending: dict[int, queue.Queue[dict[str, Any]]] = {}
         self._pending_lock = Lock()
@@ -158,7 +166,13 @@ class CodexAppServerClient:
 
         self._process = None
 
-    def decide_action(self, context: dict[str, Any], *, timeout: float = 120.0) -> dict[str, Any]:
+    def decide_action(
+        self,
+        context: dict[str, Any],
+        *,
+        operator_prompt: str | None = None,
+        timeout: float = 120.0,
+    ) -> dict[str, Any]:
         self.start()
         allowed_ids = [action["id"] for action in context["allowed_actions"]]
         model_input = json.dumps(
@@ -196,24 +210,38 @@ class CodexAppServerClient:
             "If you want to steer overworld exploration yourself, use follow_target with an affordance_id from the ranked affordances in the structured context. "
             "After acting, return the JSON object only."
         )
+        inputs: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": prompt,
+            }
+        ]
+        if operator_prompt:
+            inputs.append(
+                {
+                    "type": "text",
+                    "text": (
+                        "Runtime operator note from the web UI follows. Treat it as high-priority guidance for the next action "
+                        "selection, but still obey the structured game state, allowed actions, and tool-only response contract.\n"
+                        f"{operator_prompt}"
+                    ),
+                }
+            )
+        inputs.append(
+            {
+                "type": "text",
+                "text": (
+                    "Structured context JSON follows. Use it as the source of truth, especially for "
+                    "map warps, objects, navigation objective, recent movement results, and allowed actions.\n"
+                    f"{model_input}"
+                ),
+            }
+        )
         response = self.request(
             "turn/start",
             {
                 "threadId": self._require_thread_id(),
-                "input": [
-                    {
-                        "type": "text",
-                        "text": prompt,
-                    },
-                    {
-                        "type": "text",
-                        "text": (
-                            "Structured context JSON follows. Use it as the source of truth, especially for "
-                            "map warps, objects, navigation objective, recent movement results, and allowed actions.\n"
-                            f"{model_input}"
-                        ),
-                    }
-                ],
+                "input": inputs,
                 "cwd": str(self.cwd),
                 "approvalPolicy": "never",
                 "sandboxPolicy": {
@@ -262,6 +290,10 @@ class CodexAppServerClient:
             "response_text": result["text"],
             "events": result["events"],
             "tool_result": tool_record,
+            "model": self.model,
+            "model_provider": self.model_provider,
+            "reasoning_effort": self.reasoning_effort,
+            "token_usage": self.token_usage,
         }
 
     def request(self, method: str, params: dict[str, Any] | None, *, timeout: float) -> dict[str, Any]:
@@ -313,6 +345,7 @@ class CodexAppServerClient:
                 )
                 thread = result.get("thread") or {}
                 self.thread_id = thread.get("id") or saved_thread_id
+                self._apply_thread_settings(result)
                 self._save_thread_id(self.thread_id)
                 return
             except CodexAppServerError:
@@ -337,6 +370,7 @@ class CodexAppServerClient:
         if not thread_id:
             raise CodexAppServerError(f"Missing thread id in thread/start response: {result}")
         self.thread_id = thread_id
+        self._apply_thread_settings(result)
         self._save_thread_id(thread_id)
 
     def _wait_for_turn(self, turn_id: str, *, timeout: float) -> dict[str, Any]:
@@ -360,6 +394,16 @@ class CodexAppServerClient:
                 item_id = params.get("itemId")
                 if item_id:
                     agent_text_by_item[item_id] = agent_text_by_item.get(item_id, "") + params.get("delta", "")
+                continue
+
+            if method == "thread/tokenUsage/updated":
+                if params.get("threadId") == self.thread_id:
+                    self._apply_token_usage(params.get("tokenUsage"))
+                continue
+
+            if method == "model/rerouted":
+                if params.get("threadId") == self.thread_id:
+                    self.model = params.get("toModel") or self.model
                 continue
 
             if method == "item/completed":
@@ -428,7 +472,39 @@ class CodexAppServerClient:
             item = params["item"] or {}
             summary["item_type"] = item.get("type")
             summary["item_id"] = item.get("id")
+        if method == "thread/tokenUsage/updated":
+            token_usage = params.get("tokenUsage") or {}
+            summary["last_total_tokens"] = (token_usage.get("last") or {}).get("totalTokens")
+            summary["total_total_tokens"] = (token_usage.get("total") or {}).get("totalTokens")
+            summary["model_context_window"] = token_usage.get("modelContextWindow")
+        if method == "model/rerouted":
+            summary["from_model"] = params.get("fromModel")
+            summary["to_model"] = params.get("toModel")
         return summary
+
+    def _apply_thread_settings(self, payload: dict[str, Any]) -> None:
+        self.model = payload.get("model") or self.model
+        self.model_provider = payload.get("modelProvider") or self.model_provider
+        self.reasoning_effort = payload.get("reasoningEffort") or self.reasoning_effort
+
+    def _apply_token_usage(self, payload: dict[str, Any] | None) -> None:
+        payload = payload or {}
+        self.token_usage = {
+            "last": self._normalize_token_usage_breakdown(payload.get("last")),
+            "total": self._normalize_token_usage_breakdown(payload.get("total")),
+            "model_context_window": payload.get("modelContextWindow"),
+        }
+
+    def _normalize_token_usage_breakdown(self, payload: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not payload:
+            return None
+        return {
+            "cached_input_tokens": payload.get("cachedInputTokens"),
+            "input_tokens": payload.get("inputTokens"),
+            "output_tokens": payload.get("outputTokens"),
+            "reasoning_output_tokens": payload.get("reasoningOutputTokens"),
+            "total_tokens": payload.get("totalTokens"),
+        }
 
     def _parse_agent_decision(self, text: str, allowed_ids: list[str]) -> dict[str, Any]:
         normalized = text.strip()

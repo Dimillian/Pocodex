@@ -17,6 +17,7 @@ from .state_models import (
     ActionRequest,
     AgentActionRequest,
     AgentControlStartRequest,
+    AgentPromptRequest,
     PlannerStepRequest,
     RoutineRequest,
     SequenceRequest,
@@ -137,6 +138,19 @@ def agent_start(request: AgentControlStartRequest) -> dict:
 @app.post("/agent/stop")
 def agent_stop() -> dict:
     return get_agent_controller().stop()
+
+
+@app.post("/agent/prompt")
+def agent_prompt(request: AgentPromptRequest) -> dict:
+    try:
+        return get_agent_controller().queue_prompt(request.prompt)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/agent/prompt/clear")
+def agent_prompt_clear() -> dict:
+    return get_agent_controller().clear_prompt()
 
 
 @app.post("/execute_action")
