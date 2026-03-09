@@ -229,10 +229,64 @@ function shortId(value, prefixLength = 8) {
   return value.length <= prefixLength ? value : value.slice(0, prefixLength);
 }
 
+function agentElapsedSeconds(startedAt) {
+  if (!startedAt) {
+    return null;
+  }
+  const startedMs = Date.parse(startedAt);
+  if (Number.isNaN(startedMs)) {
+    return null;
+  }
+  return Math.max(0, (Date.now() - startedMs) / 1000);
+}
+
+function formatElapsedSeconds(seconds) {
+  if (seconds === null || seconds === undefined) {
+    return "unknown";
+  }
+  if (seconds < 10) {
+    return `${seconds.toFixed(1)}s`;
+  }
+  if (seconds < 60) {
+    return `${Math.round(seconds)}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.round(seconds % 60);
+  return `${minutes}m ${remainder}s`;
+}
+
+function getAgentStartupInfo(agentStatus) {
+  if (!agentStatus.running || agentStatus.current_action || (agentStatus.step_count ?? 0) > 0) {
+    return null;
+  }
+  const elapsedSeconds = agentElapsedSeconds(agentStatus.started_at);
+  let phase = "Starting";
+  if (agentStatus.mode === "codex") {
+    if (!agentStatus.thread_id) {
+      phase = "Starting Codex";
+    } else if (agentStatus.fresh_thread) {
+      phase = "First turn on fresh thread";
+    } else {
+      phase = "Waiting for first turn";
+    }
+  } else if (agentStatus.mode === "heuristic") {
+    phase = "First heuristic step";
+  }
+  return {
+    phase,
+    elapsedSeconds,
+    elapsedLabel: formatElapsedSeconds(elapsedSeconds),
+  };
+}
+
 function describeAgentState(agentStatus) {
+  const startup = getAgentStartupInfo(agentStatus);
   if (agentStatus.running) {
     if (agentStatus.current_action) {
       return `Executing ${agentStatus.current_action}`;
+    }
+    if (startup) {
+      return `${startup.phase} (${startup.elapsedLabel})`;
     }
     return "Loop active";
   }
@@ -251,17 +305,19 @@ function describeAgentState(agentStatus) {
 function formatAgentSessionBlock(agentStatus) {
   const lastUsage = agentStatus.token_usage?.last;
   const contextWindow = agentStatus.token_usage?.model_context_window;
+  const startup = getAgentStartupInfo(agentStatus);
   return [
     `Thread        ${shortId(agentStatus.thread_id, 12)}`,
     `Turn          ${shortId(agentStatus.turn_id, 12)}`,
     `Fresh thread  ${agentStatus.fresh_thread ? "yes" : "no"}`,
+    startup ? `Startup       ${startup.phase} (${startup.elapsedLabel})` : null,
     "",
     `Context win   ${formatInteger(contextWindow, "unknown")}`,
     `Prompt load   ${formatContextUsage(agentStatus.token_usage)}`,
     `Cache reuse   ${formatInteger(lastUsage?.cached_input_tokens)}`,
     `Last usage    ${formatTokenUsageInline(agentStatus.token_usage?.last)}`,
     `Total usage   ${formatTokenUsageInline(agentStatus.token_usage?.total)}`,
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function formatStateSummary(telemetry, running) {
@@ -571,6 +627,7 @@ function formatDecisionBlock(agentContext, agentStatus) {
   const heuristic = agentContext.heuristic_next_action || {};
   const observation = agentContext.observation || {};
   const navigation = observation.navigation || {};
+  const startup = getAgentStartupInfo(agentStatus);
   return [
     `agent state     ${agentStatus.state}`,
     `mode            ${agentStatus.mode ?? "none"}`,
@@ -580,6 +637,7 @@ function formatDecisionBlock(agentContext, agentStatus) {
     `fresh thread    ${agentStatus.fresh_thread ?? false}`,
     `steps           ${agentStatus.step_count}`,
     `thread          ${agentStatus.thread_id ?? "none"}`,
+    startup ? `startup         ${startup.phase} (${startup.elapsedLabel})` : null,
     `objective       ${agentContext.objective ?? "none"}`,
     "",
     `last action     ${decision.action ?? "none"}`,
@@ -753,6 +811,7 @@ function formatAgentLog(agentStatus) {
 function renderAgentPanel(agentStatus) {
   const queuedPrompt = agentStatus.pending_prompt || "";
   const lastPrompt = agentStatus.last_consumed_prompt || "";
+  const startup = getAgentStartupInfo(agentStatus);
 
   agentStatStateEl.textContent = agentStatus.state ?? "idle";
   agentStatStateCaptionEl.textContent = describeAgentState(agentStatus);
@@ -766,9 +825,13 @@ function renderAgentPanel(agentStatus) {
   agentStatReasoningCaptionEl.textContent = `Mode: ${agentStatus.mode ?? "none"} • Steps: ${agentStatus.step_count ?? 0}`;
 
   agentStatThreadEl.textContent = shortId(agentStatus.thread_id);
-  agentStatThreadCaptionEl.textContent = agentStatus.turn_id
-    ? `Turn ${shortId(agentStatus.turn_id)}`
-    : "No active turn";
+  if (agentStatus.turn_id) {
+    agentStatThreadCaptionEl.textContent = `Turn ${shortId(agentStatus.turn_id)}`;
+  } else if (startup) {
+    agentStatThreadCaptionEl.textContent = `First action pending • ${startup.elapsedLabel}`;
+  } else {
+    agentStatThreadCaptionEl.textContent = "No active turn";
+  }
 
   agentQueuedPromptBlockEl.textContent = queuedPrompt || "No queued note.";
   agentLastPromptBlockEl.textContent = lastPrompt || "No note sent yet.";
