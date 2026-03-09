@@ -1157,6 +1157,8 @@ class RuntimeSession:
             return str(self._decision_preference("player_name", "RED"))
         if screen_type == "rival":
             return str(self._decision_preference("rival_name", "BLUE"))
+        if screen_type == "pokemon" and self._decision_preference("nickname_policy") == "decline":
+            return ""
         base_name = naming.get("base_name") or "MON"
         if self._decision_preference("nickname_policy") == "decline":
             return base_name
