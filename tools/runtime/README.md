@@ -66,6 +66,7 @@ Available ROM values:
 - `GET /telemetry`
 - `GET /agent_context`
 - `GET /agent/status`
+- `GET /agent/models`
 - `POST /agent/start`
 - `POST /agent/stop`
 - `POST /agent/prompt`
@@ -122,6 +123,10 @@ decision, the last execution result, whether it started from a fresh Codex
 thread, current model/provider/reasoning-effort metadata, latest token usage
 and context-window telemetry reported by app-server, queued web-UI prompt
 overrides, and recent controller logs.
+
+`GET /agent/models` returns the current app-server model catalog used by the
+web UI model picker, including each model's display name and supported
+reasoning-effort options.
 
 `POST /agent/prompt` queues a free-form operator note that will be injected
 into the next Codex decision turn started by the built-in agent. Queued notes
@@ -205,6 +210,7 @@ The root page serves a minimal browser shell with:
 - live framebuffer
 - pause/resume and step controls
 - start/stop controls for the built-in Codex agent
+- model and reasoning selectors for Codex starts
 - fresh-thread toggle for Codex agent starts
 - queued free-form prompt input for the next Codex turn
 - quick save/load state controls

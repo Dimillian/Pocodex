@@ -29,6 +29,9 @@ const decodedRowsBlockEl = document.getElementById("decoded-rows-block");
 const tilemapBlockEl = document.getElementById("tilemap-block");
 const stateSlotLabelEl = document.getElementById("state-slot-label");
 const agentStateLabelEl = document.getElementById("agent-state-label");
+const agentConfigPanelEl = document.getElementById("agent-config-panel");
+const agentModelSelectEl = document.getElementById("agent-model-select");
+const agentReasoningSelectEl = document.getElementById("agent-reasoning-select");
 const agentFreshThreadToggleEl = document.getElementById("agent-fresh-thread-toggle");
 const agentPromptInputEl = document.getElementById("agent-prompt-input");
 const agentQueuedPromptBlockEl = document.getElementById("agent-queued-prompt-block");
@@ -59,6 +62,13 @@ let lastFrame = null;
 let lastRefreshAt = null;
 let refreshInFlight = false;
 let refreshQueued = false;
+let latestAgentStatus = null;
+let agentModelCatalog = [];
+let agentModelsLoaded = false;
+let agentModelsRequest = null;
+let agentModelsError = null;
+let selectedAgentModel = "";
+let selectedAgentReasoning = "";
 
 async function fetchJson(path, options) {
   const response = await fetch(path, options);
@@ -132,6 +142,8 @@ async function startAgent(mode = "codex") {
       mode,
       step_delay_ms: 100,
       fresh_thread: mode === "codex" ? agentFreshThreadToggleEl.checked : false,
+      model: mode === "codex" ? (agentModelSelectEl.value || null) : null,
+      reasoning_effort: mode === "codex" ? (agentReasoningSelectEl.value || null) : null,
     }),
   });
   await refresh();
@@ -211,6 +223,14 @@ function formatContextUsage(tokenUsage) {
   return `${inputTokens.toLocaleString()}/${contextWindow.toLocaleString()} (${((inputTokens / contextWindow) * 100).toFixed(1)}%)`;
 }
 
+function getDisplayedAgentModel(agentStatus) {
+  return agentStatus.model || agentStatus.configured_model || "none";
+}
+
+function getDisplayedAgentReasoning(agentStatus) {
+  return agentStatus.reasoning_effort || agentStatus.configured_reasoning_effort || "default";
+}
+
 function formatPreview(text, limit = 120) {
   if (!text) {
     return "none";
@@ -227,6 +247,142 @@ function shortId(value, prefixLength = 8) {
     return "none";
   }
   return value.length <= prefixLength ? value : value.slice(0, prefixLength);
+}
+
+function getDefaultModelChoice() {
+  return agentModelCatalog.find((model) => model.isDefault) || agentModelCatalog[0] || null;
+}
+
+function getAgentModelDefinition(modelValue) {
+  if (!modelValue) {
+    return getDefaultModelChoice();
+  }
+  return agentModelCatalog.find((model) => model.model === modelValue) || null;
+}
+
+function replaceSelectOptions(selectEl, options, selectedValue) {
+  selectEl.replaceChildren();
+  for (const option of options) {
+    const optionEl = document.createElement("option");
+    optionEl.value = option.value;
+    optionEl.textContent = option.label;
+    optionEl.selected = option.value === selectedValue;
+    selectEl.append(optionEl);
+  }
+}
+
+function formatReasoningEffortLabel(effort) {
+  if (!effort) {
+    return "Default";
+  }
+  if (effort === "xhigh") {
+    return "XHigh";
+  }
+  return effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
+function renderAgentReasoningOptions(agentStatus) {
+  const modelDef = getAgentModelDefinition(selectedAgentModel);
+  const supportedEfforts = modelDef?.supportedReasoningEfforts || [];
+  if (!supportedEfforts.length) {
+    selectedAgentReasoning = "";
+    replaceSelectOptions(agentReasoningSelectEl, [{ value: "", label: "Not supported" }], "");
+    agentReasoningSelectEl.disabled = true;
+    return;
+  }
+
+  const preferredReasoning = (
+    selectedAgentReasoning
+    || agentStatus.configured_reasoning_effort
+    || agentStatus.reasoning_effort
+    || modelDef.defaultReasoningEffort
+    || supportedEfforts[0]?.reasoningEffort
+    || ""
+  );
+  const normalizedReasoning = supportedEfforts.some((effort) => effort.reasoningEffort === preferredReasoning)
+    ? preferredReasoning
+    : (modelDef.defaultReasoningEffort || supportedEfforts[0].reasoningEffort);
+  selectedAgentReasoning = normalizedReasoning;
+  agentReasoningSelectEl.disabled = false;
+  replaceSelectOptions(
+    agentReasoningSelectEl,
+    supportedEfforts.map((effort) => ({
+      value: effort.reasoningEffort,
+      label: formatReasoningEffortLabel(effort.reasoningEffort),
+    })),
+    normalizedReasoning,
+  );
+}
+
+function renderAgentConfig(agentStatus) {
+  const showConfig = !agentStatus.running;
+  agentConfigPanelEl.hidden = !showConfig;
+  if (!showConfig) {
+    return;
+  }
+
+  if (!agentModelsLoaded) {
+    const loadingLabel = agentModelsError ? "Models unavailable" : "Loading models…";
+    replaceSelectOptions(agentModelSelectEl, [{ value: "", label: loadingLabel }], "");
+    replaceSelectOptions(agentReasoningSelectEl, [{ value: "", label: "Loading…" }], "");
+    agentModelSelectEl.disabled = true;
+    agentReasoningSelectEl.disabled = true;
+    return;
+  }
+
+  const preferredModel = (
+    selectedAgentModel
+    || agentStatus.configured_model
+    || agentStatus.model
+    || getDefaultModelChoice()?.model
+    || ""
+  );
+  const normalizedModel = getAgentModelDefinition(preferredModel)?.model || getDefaultModelChoice()?.model || "";
+  selectedAgentModel = normalizedModel;
+
+  replaceSelectOptions(
+    agentModelSelectEl,
+    agentModelCatalog.map((model) => ({
+      value: model.model,
+      label: model.displayName || model.model,
+    })),
+    normalizedModel,
+  );
+  agentModelSelectEl.disabled = false;
+  renderAgentReasoningOptions(agentStatus);
+}
+
+async function ensureAgentModelsLoaded() {
+  if (agentModelsLoaded) {
+    return agentModelCatalog;
+  }
+  if (agentModelsRequest) {
+    return agentModelsRequest;
+  }
+  agentModelsRequest = fetchJson("/agent/models")
+    .then((payload) => {
+      agentModelCatalog = (payload.data || []).filter((model) => model?.model);
+      agentModelsLoaded = true;
+      agentModelsError = null;
+      if (!selectedAgentModel) {
+        selectedAgentModel = getDefaultModelChoice()?.model || "";
+      }
+      if (latestAgentStatus) {
+        renderAgentConfig(latestAgentStatus);
+      }
+      return agentModelCatalog;
+    })
+    .catch((error) => {
+      agentModelsError = error;
+      if (latestAgentStatus) {
+        renderAgentConfig(latestAgentStatus);
+      }
+      throw error;
+    })
+    .finally(() => {
+      agentModelsRequest = null;
+    });
+  return agentModelsRequest;
 }
 
 function agentElapsedSeconds(startedAt) {
@@ -809,19 +965,22 @@ function formatAgentLog(agentStatus) {
 }
 
 function renderAgentPanel(agentStatus) {
+  latestAgentStatus = agentStatus;
   const queuedPrompt = agentStatus.pending_prompt || "";
   const lastPrompt = agentStatus.last_consumed_prompt || "";
   const startup = getAgentStartupInfo(agentStatus);
+  const displayedModel = getDisplayedAgentModel(agentStatus);
+  const displayedReasoning = getDisplayedAgentReasoning(agentStatus);
 
   agentStatStateEl.textContent = agentStatus.state ?? "idle";
   agentStatStateCaptionEl.textContent = describeAgentState(agentStatus);
 
-  agentStatModelEl.textContent = agentStatus.model ?? "none";
+  agentStatModelEl.textContent = displayedModel;
   agentStatModelCaptionEl.textContent = agentStatus.model_provider
     ? `Provider: ${agentStatus.model_provider}`
-    : "No provider";
+    : agentStatus.configured_model ? "Configured for next turn" : "No provider";
 
-  agentStatReasoningEl.textContent = agentStatus.reasoning_effort ?? "default";
+  agentStatReasoningEl.textContent = displayedReasoning;
   agentStatReasoningCaptionEl.textContent = `Mode: ${agentStatus.mode ?? "none"} • Steps: ${agentStatus.step_count ?? 0}`;
 
   agentStatThreadEl.textContent = shortId(agentStatus.thread_id);
@@ -836,6 +995,7 @@ function renderAgentPanel(agentStatus) {
   agentQueuedPromptBlockEl.textContent = queuedPrompt || "No queued note.";
   agentLastPromptBlockEl.textContent = lastPrompt || "No note sent yet.";
   agentStatusBlockEl.textContent = formatAgentSessionBlock(agentStatus);
+  renderAgentConfig(agentStatus);
 }
 
 async function refresh() {
@@ -932,6 +1092,16 @@ document.getElementById("agent-stop-btn").addEventListener("click", () => stopAg
 document.getElementById("agent-start-heuristic-btn").addEventListener("click", () => startAgent("heuristic"));
 document.getElementById("agent-queue-prompt-btn").addEventListener("click", () => queueAgentPrompt());
 document.getElementById("agent-clear-prompt-btn").addEventListener("click", () => clearAgentPrompt());
+agentModelSelectEl.addEventListener("change", () => {
+  selectedAgentModel = agentModelSelectEl.value;
+  selectedAgentReasoning = "";
+  if (latestAgentStatus) {
+    renderAgentReasoningOptions(latestAgentStatus);
+  }
+});
+agentReasoningSelectEl.addEventListener("change", () => {
+  selectedAgentReasoning = agentReasoningSelectEl.value;
+});
 document.querySelectorAll("[data-routine]").forEach((buttonEl) => {
   buttonEl.addEventListener("click", () => runRoutine(buttonEl.dataset.routine));
 });
@@ -949,4 +1119,7 @@ setInterval(() => {
   refresh().catch((error) => console.error(error));
 }, REFRESH_INTERVAL_MS);
 
+ensureAgentModelsLoaded().catch((error) => {
+  console.error("Failed to load agent models", error);
+});
 refresh().catch((error) => console.error(error));

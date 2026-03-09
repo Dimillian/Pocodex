@@ -46,6 +46,8 @@ class AgentController:
             "model": None,
             "model_provider": None,
             "reasoning_effort": None,
+            "configured_model": None,
+            "configured_reasoning_effort": None,
             "token_usage": {
                 "last": None,
                 "total": None,
@@ -74,6 +76,8 @@ class AgentController:
         step_delay_ms: int = 100,
         max_steps: int | None = None,
         fresh_thread: bool = True,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
@@ -98,6 +102,8 @@ class AgentController:
                     "model": None,
                     "model_provider": None,
                     "reasoning_effort": None,
+                    "configured_model": model,
+                    "configured_reasoning_effort": reasoning_effort,
                     "token_usage": {
                         "last": None,
                         "total": None,
@@ -114,6 +120,8 @@ class AgentController:
                     "step_delay_ms": step_delay_ms,
                     "max_steps": max_steps,
                     "fresh_thread": fresh_thread,
+                    "model": model,
+                    "reasoning_effort": reasoning_effort,
                 },
                 name="pokered-agent-controller",
                 daemon=True,
@@ -127,6 +135,8 @@ class AgentController:
                 "step_delay_ms": step_delay_ms,
                 "max_steps": max_steps,
                 "fresh_thread": fresh_thread,
+                "model": model,
+                "reasoning_effort": reasoning_effort,
             }
         )
         return self.status()
@@ -182,7 +192,16 @@ class AgentController:
         )
         return self.status()
 
-    def _run_loop(self, *, mode: str, step_delay_ms: int, max_steps: int | None, fresh_thread: bool) -> None:
+    def _run_loop(
+        self,
+        *,
+        mode: str,
+        step_delay_ms: int,
+        max_steps: int | None,
+        fresh_thread: bool,
+        model: str | None,
+        reasoning_effort: str | None,
+    ) -> None:
         codex_client = None
         try:
             if mode == "codex":
@@ -190,6 +209,8 @@ class AgentController:
                     cwd=self.repo_root,
                     thread_state_path=self.thread_state_path,
                     fresh_thread=fresh_thread,
+                    model=model,
+                    reasoning_effort=reasoning_effort,
                     tool_handler=self._handle_codex_tool_call,
                 )
                 codex_client.start()
@@ -199,6 +220,8 @@ class AgentController:
                     model=codex_client.model,
                     model_provider=codex_client.model_provider,
                     reasoning_effort=codex_client.reasoning_effort,
+                    configured_model=model,
+                    configured_reasoning_effort=reasoning_effort,
                     token_usage=codex_client.token_usage,
                 )
             elif mode == "heuristic":

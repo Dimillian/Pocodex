@@ -126,6 +126,24 @@
                 <button id="agent-stop-btn">Stop Agent</button>
                 <button id="agent-start-heuristic-btn">Start Heuristic Agent</button>
               </div>
+              <div id="agent-config-panel" class="agent-config-panel">
+                <label class="field-stack agent-config-field" for="agent-model-select">
+                  <span class="agent-mini-label">Model</span>
+                  <div class="agent-select-shell">
+                    <select id="agent-model-select" class="agent-select">
+                      <option value="">Loading models…</option>
+                    </select>
+                  </div>
+                </label>
+                <label class="field-stack agent-config-field" for="agent-reasoning-select">
+                  <span class="agent-mini-label">Reasoning</span>
+                  <div class="agent-select-shell">
+                    <select id="agent-reasoning-select" class="agent-select">
+                      <option value="">Default</option>
+                    </select>
+                  </div>
+                </label>
+              </div>
               <label class="agent-toggle-card agent-toggle-card--compact" for="agent-fresh-thread-toggle">
                 <div class="agent-toggle-copy">
                   <span class="agent-mini-label">Thread policy</span>

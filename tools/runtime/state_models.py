@@ -60,6 +60,8 @@ class AgentControlStartRequest(BaseModel):
     step_delay_ms: int = Field(default=100, ge=0, le=10000)
     max_steps: int | None = Field(default=None, ge=1, le=100000)
     fresh_thread: bool = True
+    model: str | None = Field(default=None, max_length=256)
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"] | None = None
 
 
 class AgentPromptRequest(BaseModel):

@@ -12,6 +12,7 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
 from .agent_service import AgentController
+from .codex_client import CodexAppServerClient
 from .session import RuntimeSession
 from .state_models import (
     ActionRequest,
@@ -122,6 +123,14 @@ def agent_status() -> dict:
     return get_agent_controller().status()
 
 
+@app.get("/agent/models")
+def agent_models() -> dict:
+    try:
+        return {"data": CodexAppServerClient.list_models(cwd=get_session().repo_root)}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.post("/agent/start")
 def agent_start(request: AgentControlStartRequest) -> dict:
     try:
@@ -130,6 +139,8 @@ def agent_start(request: AgentControlStartRequest) -> dict:
             step_delay_ms=request.step_delay_ms,
             max_steps=request.max_steps,
             fresh_thread=request.fresh_thread,
+            model=request.model,
+            reasoning_effort=request.reasoning_effort,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

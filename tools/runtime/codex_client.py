@@ -71,11 +71,15 @@ class CodexAppServerClient:
         cwd: Path,
         thread_state_path: Path | None = None,
         fresh_thread: bool = False,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
         tool_handler: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self.cwd = cwd
         self.thread_state_path = thread_state_path
         self.fresh_thread = fresh_thread
+        self.requested_model = model
+        self.requested_reasoning_effort = reasoning_effort
         self.tool_handler = tool_handler
         self.thread_id: str | None = None
         self.model: str | None = None
@@ -105,6 +109,9 @@ class CodexAppServerClient:
         self.close()
 
     def start(self) -> None:
+        self._connect(ensure_thread=True)
+
+    def _connect(self, *, ensure_thread: bool) -> None:
         if self._process is not None:
             return
 
@@ -143,7 +150,8 @@ class CodexAppServerClient:
             timeout=15.0,
         )
         self.notify("initialized", None)
-        self._ensure_thread()
+        if ensure_thread:
+            self._ensure_thread()
 
     def close(self) -> None:
         process = self._process
@@ -247,8 +255,9 @@ class CodexAppServerClient:
                 "sandboxPolicy": {
                     "type": "readOnly",
                 },
+                "model": self.requested_model,
+                "effort": self.requested_reasoning_effort,
                 "personality": "pragmatic",
-                "summary": "concise",
                 "outputSchema": output_schema,
             },
             timeout=30.0,
@@ -339,6 +348,7 @@ class CodexAppServerClient:
                     "thread/resume",
                     {
                         "threadId": saved_thread_id,
+                        "model": self.requested_model,
                         "personality": "pragmatic",
                     },
                     timeout=15.0,
@@ -354,13 +364,13 @@ class CodexAppServerClient:
         result = self.request(
             "thread/start",
             {
+                "model": self.requested_model,
                 "cwd": str(self.cwd),
                 "approvalPolicy": "never",
                 "sandboxPolicy": {
                     "type": "readOnly",
                 },
                 "personality": "pragmatic",
-                "summary": "concise",
                 "dynamicTools": RUNTIME_DYNAMIC_TOOLS if self.tool_handler is not None else [],
             },
             timeout=15.0,
@@ -372,6 +382,31 @@ class CodexAppServerClient:
         self.thread_id = thread_id
         self._apply_thread_settings(result)
         self._save_thread_id(thread_id)
+
+    @classmethod
+    def list_models(cls, *, cwd: Path) -> list[dict[str, Any]]:
+        client = cls(cwd=cwd)
+        try:
+            client._connect(ensure_thread=False)
+            models: list[dict[str, Any]] = []
+            cursor: str | None = None
+            while True:
+                result = client.request(
+                    "model/list",
+                    {
+                        "limit": 100,
+                        "includeHidden": False,
+                        "cursor": cursor,
+                    },
+                    timeout=15.0,
+                )
+                models.extend(result.get("data") or [])
+                cursor = result.get("nextCursor")
+                if not cursor:
+                    break
+            return models
+        finally:
+            client.close()
 
     def _wait_for_turn(self, turn_id: str, *, timeout: float) -> dict[str, Any]:
         deadline = time.monotonic() + timeout
