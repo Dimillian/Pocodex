@@ -317,6 +317,11 @@ Tasks:
   - lowering the default agent step delay
   - letting the runtime execute several verified local movement steps per agent action
 - [x] Make UI frame + telemetry reads atomic with a shared runtime snapshot endpoint
+- [x] Add trainer-state telemetry to the shared snapshot:
+  - party member HP/status/nicknames
+  - bag inventory and quantities
+  - money and obtained badges
+- [x] Thread trainer-state summaries through agent context and the runtime web UI
 - [x] Validate the first overworld milestones:
   - leave Red's bedroom
   - go downstairs

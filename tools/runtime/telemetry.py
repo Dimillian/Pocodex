@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from .game_data import DEFAULT_MOVE_CATALOG
+from .game_data import (
+    DEFAULT_ITEM_CATALOG,
+    DEFAULT_MOVE_CATALOG,
+    DEFAULT_SPECIES_CATALOG,
+    KANTO_BADGE_NAMES,
+)
 from .navigator import decode_player_direction
 from .symbols import SymbolTable
 from .tilemap import (
@@ -20,6 +25,14 @@ from .tilemap import (
 
 TILEMAP_WIDTH = 20
 TILEMAP_HEIGHT = 18
+PARTY_SIZE = 6
+SLEEP_MASK = 0b111
+STATUS_NAMES = {
+    3: "PSN",
+    4: "BRN",
+    5: "FRZ",
+    6: "PAR",
+}
 
 SYMBOL_NAMES = (
     "wTileMap",
@@ -73,6 +86,20 @@ SYMBOL_NAMES = (
     "wNamingScreenNameLength",
     "wNamingScreenSubmitName",
     "wNamingScreenLetter",
+    "wPartyCount",
+    "wPartyMon1",
+    "wPartyMon2",
+    "wPartyMon1Species",
+    "wPartyMon1HP",
+    "wPartyMon1Status",
+    "wPartyMon1Level",
+    "wPartyMon1MaxHP",
+    "wPartyMon1Nick",
+    "wPartyMon2Nick",
+    "wNumBagItems",
+    "wBagItems",
+    "wPlayerMoney",
+    "wObtainedBadges",
     "wPlayerStarter",
     "wRivalStarter",
     "wCurPartySpecies",
@@ -110,6 +137,105 @@ def _read_u16_be(mem, address: int) -> int:
 def _decode_ram_text(mem, address: int, length: int) -> str:
     values = [mem[address + offset] for offset in range(length)]
     return decode_text_bytes(values, DEFAULT_CHARMAP)
+
+
+def _decode_bcd_money(mem, address: int, length: int = 3) -> tuple[int, str]:
+    digits = "".join(f"{mem[address + offset]:02x}" for offset in range(length))
+    return int(digits), digits
+
+
+def _decode_party_status(status: int) -> str:
+    if status == 0:
+        return "OK"
+    sleep_turns = status & SLEEP_MASK
+    if sleep_turns:
+        return "SLP"
+    for bit, label in STATUS_NAMES.items():
+        if status & (1 << bit):
+            return label
+    return f"0x{status:02x}"
+
+
+def _build_party_state(mem, addresses: TelemetryAddresses) -> dict:
+    party_count = min(mem[addresses["wPartyCount"]], PARTY_SIZE)
+    struct_base = addresses["wPartyMon1"]
+    struct_length = addresses["wPartyMon2"] - addresses["wPartyMon1"]
+    nick_base = addresses["wPartyMon1Nick"]
+    nick_length = addresses["wPartyMon2Nick"] - addresses["wPartyMon1Nick"]
+    species_offset = addresses["wPartyMon1Species"] - struct_base
+    hp_offset = addresses["wPartyMon1HP"] - struct_base
+    status_offset = addresses["wPartyMon1Status"] - struct_base
+    level_offset = addresses["wPartyMon1Level"] - struct_base
+    max_hp_offset = addresses["wPartyMon1MaxHP"] - struct_base
+
+    members: list[dict] = []
+    for slot in range(party_count):
+        base = struct_base + (slot * struct_length)
+        nickname_address = nick_base + (slot * nick_length)
+        species_id = mem[base + species_offset]
+        hp = _read_u16_be(mem, base + hp_offset)
+        max_hp = _read_u16_be(mem, base + max_hp_offset)
+        members.append(
+            {
+                "slot": slot,
+                "species_id": species_id,
+                "species_name": DEFAULT_SPECIES_CATALOG.get(species_id, f"SPECIES_{species_id:02X}"),
+                "nickname": _decode_ram_text(mem, nickname_address, nick_length),
+                "level": mem[base + level_offset],
+                "hp": hp,
+                "max_hp": max_hp,
+                "hp_ratio": round(hp / max_hp, 4) if max_hp else 0.0,
+                "status": _decode_party_status(mem[base + status_offset]),
+                "fainted": hp == 0,
+            }
+        )
+
+    return {
+        "count": party_count,
+        "members": members,
+    }
+
+
+def _build_inventory_state(mem, addresses: TelemetryAddresses) -> dict:
+    item_count = mem[addresses["wNumBagItems"]]
+    items: list[dict] = []
+    base = addresses["wBagItems"]
+    for slot in range(item_count):
+        entry_address = base + (slot * 2)
+        item_id = mem[entry_address]
+        if item_id == 0xFF:
+            break
+        items.append(
+            {
+                "slot": slot,
+                "item_id": item_id,
+                "name": DEFAULT_ITEM_CATALOG.get(item_id, f"ITEM_{item_id:02X}"),
+                "quantity": mem[entry_address + 1],
+            }
+        )
+    return {
+        "count": len(items),
+        "items": items,
+    }
+
+
+def _build_trainer_state(mem, addresses: TelemetryAddresses) -> dict:
+    money, money_bcd = _decode_bcd_money(mem, addresses["wPlayerMoney"])
+    obtained_badges = mem[addresses["wObtainedBadges"]]
+    badges = [
+        {
+            "bit": bit,
+            "name": badge_name,
+            "owned": bool(obtained_badges & (1 << bit)),
+        }
+        for bit, badge_name in enumerate(KANTO_BADGE_NAMES)
+    ]
+    return {
+        "money": money,
+        "money_bcd": money_bcd,
+        "badge_count": sum(1 for badge in badges if badge["owned"]),
+        "badges": badges,
+    }
 
 
 DECORATION_TOKEN_RE = re.compile(r"BOLD_[A-Z]|<[0-9A-Fa-f]{2}>")
@@ -618,6 +744,9 @@ def build_telemetry(pyboy, addresses: TelemetryAddresses) -> dict:
         max_menu_item=max_menu_item,
     )
     pokedex_state = _build_pokedex_state(decoded_rows)
+    party_state = _build_party_state(mem, addresses)
+    inventory_state = _build_inventory_state(mem, addresses)
+    trainer_state = _build_trainer_state(mem, addresses)
     if in_battle:
         mode = "battle"
     elif pokedex_state["active"]:
@@ -673,10 +802,13 @@ def build_telemetry(pyboy, addresses: TelemetryAddresses) -> dict:
         },
         "battle": battle_state,
         "party": {
+            **party_state,
             "current_species": mem[addresses["wCurPartySpecies"]],
             "player_starter": mem[addresses["wPlayerStarter"]],
             "rival_starter": mem[addresses["wRivalStarter"]],
         },
+        "inventory": inventory_state,
+        "trainer": trainer_state,
         "pokedex": pokedex_state,
         "naming": naming_state,
         "input": {

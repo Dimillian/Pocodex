@@ -202,7 +202,7 @@ def _made_progress(
         return True
     if before.get("pokedex") != after.get("pokedex"):
         return True
-    if before["party"] != after["party"]:
+    if _party_progress_signature(before.get("party")) != _party_progress_signature(after.get("party")):
         return True
     return False
 
@@ -219,6 +219,17 @@ def _remember_signature(signatures: list[dict[str, Any]], signature: dict[str, A
     signatures.append(signature)
     if len(signatures) > limit:
         del signatures[0 : len(signatures) - limit]
+
+
+def _party_progress_signature(party: dict[str, Any] | None) -> tuple[Any, ...]:
+    party = party or {}
+    return (
+        party.get("player_starter"),
+        party.get("rival_starter"),
+        party.get("current_species"),
+        party.get("count"),
+        tuple(member.get("species_id") for member in party.get("members", [])),
+    )
 
 
 def _lifecycle_rank(lifecycle: str | None) -> int:

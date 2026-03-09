@@ -5,6 +5,7 @@ const fpsLabelEl = document.getElementById("fps-label");
 const statusBlockEl = document.getElementById("status-block");
 const mapBlockEl = document.getElementById("map-block");
 const battleBlockEl = document.getElementById("battle-block");
+const trainerBlockEl = document.getElementById("trainer-block");
 const menuBlockEl = document.getElementById("menu-block");
 const dialogueBlockEl = document.getElementById("dialogue-block");
 const eventsBlockEl = document.getElementById("events-block");
@@ -242,6 +243,36 @@ function formatInteractionBlock(telemetry) {
     pokedex.active && pokedex.species_class ? `class          ${pokedex.species_class}` : null,
     pokedex.active && pokedex.height_weight ? `stats          ${pokedex.height_weight}` : null,
   ].filter(Boolean).join("\n");
+}
+
+function formatTrainerBlock(telemetry) {
+  const party = telemetry.party || {};
+  const inventory = telemetry.inventory || {};
+  const trainer = telemetry.trainer || {};
+  const badgeNames = (trainer.badges || [])
+    .filter((badge) => badge.owned)
+    .map((badge) => badge.name);
+  const lines = [
+    `money          ${trainer.money ?? 0}`,
+    `money bcd      ${trainer.money_bcd ?? "000000"}`,
+    `badges         ${trainer.badge_count ?? 0} (${badgeNames.join(", ") || "none"})`,
+    "",
+    "party",
+    joinLines(
+      (party.members || []).map((member) =>
+        `${member.nickname || member.species_name || "?"} lv${member.level ?? "?"} ${member.hp ?? "?"}/${member.max_hp ?? "?"} ${member.status ?? "OK"}`,
+      ),
+      "none",
+    ),
+    "",
+    `bag slots       ${inventory.count ?? 0}`,
+    "inventory",
+    joinLines(
+      (inventory.items || []).map((item) => `${item.name || "?"} x${item.quantity ?? "?"}`),
+      "none",
+    ),
+  ];
+  return lines.join("\n");
 }
 
 function keyForPoint(x, y) {
@@ -653,6 +684,7 @@ async function refresh() {
     dialogueBlockEl.textContent = formatDialogueBlock(telemetry);
     menuBlockEl.textContent = formatMenuBlock(telemetry);
     battleBlockEl.textContent = formatBattleBlock(telemetry);
+    trainerBlockEl.textContent = formatTrainerBlock(telemetry);
     eventsBlockEl.textContent = formatEventsBlock(telemetry);
     tracesBlockEl.textContent = formatTracesBlock(traces);
     agentLogBlockEl.textContent = formatAgentLog(agentStatus);

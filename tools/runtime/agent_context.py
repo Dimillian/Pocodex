@@ -40,6 +40,9 @@ def build_agent_context(
             },
             "naming": snapshot.get("naming"),
             "pokedex": snapshot.get("pokedex"),
+            "party": snapshot.get("party"),
+            "inventory": snapshot.get("inventory"),
+            "trainer": snapshot.get("trainer"),
             "menu": {
                 "active": snapshot["menu"]["active"],
                 "visible_items": snapshot["menu"]["visible_items"],
@@ -67,6 +70,9 @@ def build_agent_context(
             },
             "naming": snapshot.get("naming"),
             "pokedex": snapshot.get("pokedex"),
+            "party": snapshot.get("party"),
+            "inventory": snapshot.get("inventory"),
+            "trainer": snapshot.get("trainer"),
             "menu": {
                 "active": snapshot["menu"]["active"],
                 "visible_items": snapshot["menu"]["visible_items"],
@@ -271,6 +277,9 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
     naming = observation.get("naming") or {}
     pokedex = observation.get("pokedex") or {}
     battle = observation.get("battle") or {}
+    party = observation.get("party") or {}
+    inventory = observation.get("inventory") or {}
+    trainer = observation.get("trainer") or {}
     selected_move = ((battle.get("move_menu") or {}).get("selected_move") or {}).get("name")
     objective = navigation.get("objective")
     target_affordance = navigation.get("target_affordance")
@@ -299,6 +308,9 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
     preset_name_line = "none"
     if recommended_preset_name:
         preset_name_line = recommended_preset_name
+    party_summary = _summarize_party(party)
+    inventory_summary = _summarize_inventory(inventory)
+    money_summary = _summarize_money_and_badges(trainer)
 
     return (
         "You are choosing the next action for Pokemon Blue.\n"
@@ -321,6 +333,9 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
         f"Recommended preset menu choice: {preset_name_line}\n"
         f"Naming screen: {naming.get('active', False)} type={naming.get('screen_type')} current='{naming.get('current_text')}' base='{naming.get('base_name')}'\n"
         f"Pokedex screen: {pokedex.get('active', False)} species={pokedex.get('species_name')} class={pokedex.get('species_class')} info={' | '.join(pokedex.get('description_lines', []))}\n"
+        f"Party summary: {party_summary}\n"
+        f"Inventory summary: {inventory_summary}\n"
+        f"Trainer summary: {money_summary}\n"
         f"Battle state: ui={battle.get('ui_state')} selected_command={battle.get('command_menu', {}).get('selected_command')} selected_move={selected_move}\n"
         "Recent events:\n"
         f"{event_lines}\n"
@@ -370,6 +385,44 @@ def _decision_preference(decision_state: dict[str, Any], key: str) -> Any:
 
 def _decision_flag(decision_state: dict[str, Any], key: str) -> bool:
     return bool((decision_state.get("flags") or {}).get(key))
+
+
+def _summarize_party(party: dict[str, Any]) -> str:
+    members = party.get("members") or []
+    if not members:
+        return "none"
+    return ", ".join(
+        f"{member.get('nickname') or member.get('species_name') or '?'} lv{member.get('level', '?')} "
+        f"{member.get('hp', '?')}/{member.get('max_hp', '?')} {member.get('status', 'OK')}"
+        for member in members
+    )
+
+
+def _summarize_inventory(inventory: dict[str, Any], *, limit: int = 5) -> str:
+    items = inventory.get("items") or []
+    if not items:
+        return "0 items"
+    preview = ", ".join(
+        f"{item.get('name', '?')} x{item.get('quantity', '?')}"
+        for item in items[:limit]
+    )
+    remainder = len(items) - limit
+    if remainder > 0:
+        preview = f"{preview}, +{remainder} more"
+    return f"{inventory.get('count', len(items))} items: {preview}"
+
+
+def _summarize_money_and_badges(trainer: dict[str, Any]) -> str:
+    badge_names = [
+        badge.get("name")
+        for badge in trainer.get("badges", [])
+        if badge.get("owned")
+    ]
+    badge_summary = ", ".join(badge_names) if badge_names else "none"
+    return (
+        f"money={trainer.get('money', 0)} "
+        f"badges={trainer.get('badge_count', len(badge_names))} [{badge_summary}]"
+    )
 
 
 def build_dialogue_context(snapshot: dict[str, Any]) -> dict[str, Any]:

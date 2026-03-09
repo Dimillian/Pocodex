@@ -85,6 +85,9 @@ Available ROM values:
 `GET /telemetry` currently includes:
 
 - symbol-aware map, battle, input, and menu state
+- party members with current HP, max HP, status, and nicknames
+- bag inventory with item names and quantities
+- trainer economy/progression state with money and badges
 - decoded screen rows from `wTileMap`
 - extracted dialogue text from the standard bottom message box
 - validated menu extraction that only activates when a visible cursor is on screen
@@ -99,6 +102,7 @@ runtime read, which keeps the UI frame and the agent-visible state in sync.
 - structured model input with:
   - map names, sizes, warps, and objects
   - movement and facing state
+  - party, bag, money, and badge state
   - current navigation objective
   - recent movement and transition results
 - recent events and recent action traces
@@ -197,6 +201,7 @@ The root page serves a minimal browser shell with:
 - button controls
 - keyboard input
 - map, battle, menu, dialogue, and input telemetry
+- trainer state telemetry for party, bag, money, and badges
 - recent event log
 - recent action traces
 - compact agent context view

@@ -6,6 +6,8 @@ import re
 
 
 MOVE_NAME_RE = re.compile(r'^\s*li\s+"(?P<name>[^"]+)"')
+ITEM_NAME_RE = re.compile(r'^\s*li\s+"(?P<name>[^"]+)"')
+SPECIES_NAME_RE = re.compile(r'^\s*dname\s+"(?P<name>[^"]+)"')
 MOVE_DATA_RE = re.compile(
     r"^\s*move\s+"
     r"(?P<const>[A-Z0-9_]+),\s+"
@@ -27,18 +29,35 @@ class MoveInfo:
     pp: int
 
 
+KANTO_BADGE_NAMES = (
+    "BOULDERBADGE",
+    "CASCADEBADGE",
+    "THUNDERBADGE",
+    "RAINBOWBADGE",
+    "SOULBADGE",
+    "MARSHBADGE",
+    "VOLCANOBADGE",
+    "EARTHBADGE",
+)
+
+
+def _load_quoted_name_list(path: Path, pattern: re.Pattern[str]) -> list[str]:
+    names: list[str] = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split(";", 1)[0].rstrip()
+        if not line:
+            continue
+        match = pattern.match(line)
+        if match:
+            names.append(match.group("name"))
+    return names
+
+
 def load_move_catalog(repo_root: Path) -> dict[int, MoveInfo]:
     names_path = repo_root / "data" / "moves" / "names.asm"
     data_path = repo_root / "data" / "moves" / "moves.asm"
 
-    names: list[str] = []
-    for raw_line in names_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.split(";", 1)[0].rstrip()
-        if not line:
-            continue
-        match = MOVE_NAME_RE.match(line)
-        if match:
-            names.append(match.group("name"))
+    names = _load_quoted_name_list(names_path, MOVE_NAME_RE)
 
     data_rows: list[tuple[int, str, int, str, int, int]] = []
     for raw_line in data_path.read_text(encoding="utf-8").splitlines():
@@ -73,4 +92,24 @@ def load_move_catalog(repo_root: Path) -> dict[int, MoveInfo]:
     return catalog
 
 
+def load_item_catalog(repo_root: Path) -> dict[int, str]:
+    names_path = repo_root / "data" / "items" / "names.asm"
+    names = _load_quoted_name_list(names_path, ITEM_NAME_RE)
+    return {
+        item_id: name
+        for item_id, name in enumerate(names, start=1)
+    }
+
+
+def load_species_catalog(repo_root: Path) -> dict[int, str]:
+    names_path = repo_root / "data" / "pokemon" / "names.asm"
+    names = _load_quoted_name_list(names_path, SPECIES_NAME_RE)
+    return {
+        species_id: name
+        for species_id, name in enumerate(names, start=1)
+    }
+
+
 DEFAULT_MOVE_CATALOG = load_move_catalog(Path(__file__).resolve().parents[2])
+DEFAULT_ITEM_CATALOG = load_item_catalog(Path(__file__).resolve().parents[2])
+DEFAULT_SPECIES_CATALOG = load_species_catalog(Path(__file__).resolve().parents[2])
