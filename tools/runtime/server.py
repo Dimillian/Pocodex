@@ -171,6 +171,7 @@ def execute_action(request: AgentActionRequest) -> dict:
             request.action,
             request.reason,
             affordance_id=request.affordance_id,
+            objective_id=request.objective_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

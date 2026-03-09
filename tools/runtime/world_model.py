@@ -2,6 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from .navigation_heuristics import (
+    choice_interaction_focus_level,
+    describe_scripted_trigger,
+    has_engaged_choice_interaction,
+    has_nearby_choice_interaction,
+    should_prefer_exit_warp,
+)
 from .progress_memory import (
     affordance_distance,
     affordance_memory_key,
@@ -23,7 +30,6 @@ def build_world_model(
     *,
     affordances: list[dict[str, Any]],
     progress_memory: dict[str, Any],
-    objective: dict[str, Any] | None,
 ) -> dict[str, Any]:
     ranked: list[dict[str, Any]] = []
     for affordance in affordances:
@@ -31,7 +37,6 @@ def build_world_model(
             snapshot,
             affordance=affordance,
             progress_memory=progress_memory,
-            objective=objective,
             affordances=affordances,
         )
         ranked.append(
@@ -50,8 +55,6 @@ def build_world_model(
     if target_affordance is not None:
         target_reason = "; ".join(target_affordance["score_reasons"][:4]) or "Highest-scoring nearby affordance."
         target_source = "world_model"
-    elif objective is not None:
-        target_source = "objective_fallback"
 
     return {
         "target_affordance": target_affordance,
@@ -67,9 +70,22 @@ def _score_affordance(
     *,
     affordance: dict[str, Any],
     progress_memory: dict[str, Any],
-    objective: dict[str, Any] | None,
     affordances: list[dict[str, Any]],
 ) -> tuple[int, list[str]]:
+    prefer_exit_warp, exit_reasons = should_prefer_exit_warp(
+        snapshot,
+        affordances=affordances,
+        progress_memory=progress_memory,
+    )
+    scripted_trigger = describe_scripted_trigger(
+        snapshot,
+        affordance=affordance,
+        affordances=affordances,
+        progress_memory=progress_memory,
+    )
+    nearby_choice_interaction = has_nearby_choice_interaction(snapshot, affordances=affordances)
+    engaged_choice_interaction = has_engaged_choice_interaction(snapshot, affordances=affordances)
+    choice_focus_level = choice_interaction_focus_level(snapshot, affordance=affordance)
     score = BASE_KIND_SCORES.get(affordance["kind"], 10)
     reasons = [f"base score for {affordance['kind']}"]
     distance = affordance_distance(snapshot, affordance)
@@ -106,6 +122,9 @@ def _score_affordance(
         if current_signature in successful_after_signatures:
             score -= 42
             reasons.append("already consumed in this resulting state")
+        if current_signature in stats.get("consumed_field_signatures", []):
+            score -= 90
+            reasons.append("already inspected in this field state")
         if current_signature in noop_before_signatures:
             score -= 24
             reasons.append("known no-op in this state")
@@ -113,6 +132,10 @@ def _score_affordance(
             penalty = min(stats["stale_count"], 3) * 10
             score -= penalty
             reasons.append(f"stale repeats -{penalty}")
+        if stats.get("consumed_count", 0):
+            penalty = min(stats["consumed_count"], 3) * 20
+            score -= penalty
+            reasons.append(f"consumed repeats -{penalty}")
         if stats.get("noop_count", 0):
             penalty = min(stats["noop_count"], 3) * 18
             score -= penalty
@@ -129,13 +152,25 @@ def _score_affordance(
             score -= repeat_penalty
             reasons.append(f"recently repeated -{repeat_penalty}")
 
-    if objective and objective.get("affordance_id") == affordance["id"]:
-        score += 20
-        reasons.append("matches fallback objective")
-
     if affordance["kind"] == "trigger_region" and affordance.get("next_script"):
         score += 20
         reasons.append("script trigger")
+        if scripted_trigger["progression_like"]:
+            score += 22
+            reasons.extend(reason for reason in scripted_trigger["reasons"] if reason != "scripted trigger")
+            trigger_recovery = 0
+            if stats:
+                if stats.get("lifecycle") == "stale":
+                    trigger_recovery += 24
+                if current_signature in noop_before_signatures:
+                    trigger_recovery += 14
+                if stats.get("stale_count", 0):
+                    trigger_recovery += min(int(stats.get("stale_count", 0)), 2) * 6
+                if stats.get("blocked_count", 0) and stats.get("last_outcome") in {"blocked", "regressed"}:
+                    trigger_recovery += 8
+            if trigger_recovery:
+                score += min(trigger_recovery, 42)
+                reasons.append("softened stale penalties for progression trigger")
 
     if affordance["kind"] == "warp":
         target_map = affordance.get("target_map")
@@ -143,47 +178,29 @@ def _score_affordance(
         if target_map and target_map not in visited_maps and target_map != "LAST_MAP":
             score += 25
             reasons.append("leads to unseen map")
-        if _prefer_exit_warp(snapshot, affordances, progress_memory):
-            score += 25
-            reasons.append("exit warp preferred after stale local interactions")
+        if prefer_exit_warp:
+            score += 35
+            reasons.extend(exit_reasons or ["exit warp preferred after stale local interactions"])
 
     if affordance["kind"] == "object":
         text_ref = affordance.get("text_ref") or ""
         if text_ref.endswith("POKE_BALL") and snapshot["party"]["player_starter"] == 0:
             score += 35
             reasons.append("starter ball before selection")
+        if choice_focus_level >= 2:
+            score += 28
+            reasons.append("choice interaction is ready from current tile")
+        elif choice_focus_level == 1:
+            score += 12
+            reasons.append("choice interaction is nearby")
+        if nearby_choice_interaction and {"pickup_like", "starter_choice_like"} & set(affordance.get("identity_hints") or []):
+            score += 18
+            reasons.append("nearby choice interaction should be resolved before trigger recovery")
+        if engaged_choice_interaction and choice_focus_level == 0 and distance is not None and distance <= 1:
+            score -= 24
+            reasons.append("adjacent non-choice interaction while a choice interaction is ready")
         if affordance.get("sprite") in {"SPRITE_OAK", "SPRITE_RIVAL", "SPRITE_GARY"}:
             score += 10
             reasons.append("story NPC")
 
     return score, reasons
-
-
-def _prefer_exit_warp(
-    snapshot: dict[str, Any],
-    affordances: list[dict[str, Any]],
-    progress_memory: dict[str, Any],
-) -> bool:
-    if snapshot["mode"] != "field":
-        return False
-    if snapshot["dialogue"]["active"] or snapshot["menu"]["active"] or snapshot["battle"]["in_battle"]:
-        return False
-
-    stale_nonwarp = 0
-    checked_nonwarp = 0
-    current_signature = progress_state_signature(snapshot)
-    for affordance in affordances:
-        if affordance["kind"] == "warp":
-            continue
-        checked_nonwarp += 1
-        stats = progress_memory.get("affordances", {}).get(affordance_memory_key(snapshot, affordance))
-        if not stats:
-            continue
-        if (
-            stats.get("lifecycle") == "stale"
-            or current_signature in stats.get("noop_before_signatures", [])
-            or current_signature in stats.get("successful_after_signatures", [])
-            or stats.get("stale_count", 0) >= 2
-        ):
-            stale_nonwarp += 1
-    return checked_nonwarp > 0 and stale_nonwarp == checked_nonwarp

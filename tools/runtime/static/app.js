@@ -528,17 +528,34 @@ function formatStatesAndInput(states, telemetry) {
 function formatTargetBlock(telemetry) {
   const navigation = telemetry.navigation || {};
   const target = navigation.target_affordance;
-  const objective = navigation.objective;
+  const objectiveState = navigation.objective_state || {};
+  const objective = objectiveState.active_objective || navigation.active_objective || navigation.objective;
+  const candidates = objectiveState.candidate_objectives || navigation.candidate_objectives || [];
+  const progressSignals = objectiveState.progress_signals || navigation.progress_signals || [];
+  const loopSignals = objectiveState.loop_signals || navigation.loop_signals || [];
   const reasons = (target?.score_reasons || []).slice(0, 4);
   const base = [
+    `active obj     ${objective?.label ?? "none"}`,
+    `obj kind       ${objective?.kind ?? "none"}`,
+    `obj id         ${objective?.id ?? "none"}`,
+    `confidence     ${objective?.confidence ?? "none"}`,
+    "",
     `target         ${target?.label ?? "none"}`,
-    `kind           ${target?.kind ?? "none"}`,
-    `id             ${target?.id ?? "none"}`,
+    `target kind    ${target?.kind ?? "none"}`,
+    `target id      ${target?.id ?? "none"}`,
     `source         ${navigation.target_source ?? "none"}`,
     `reason         ${navigation.target_reason ?? "none"}`,
-    "",
-    `fallback obj   ${objective?.label ?? "none"}`,
   ];
+  if (candidates.length) {
+    base.push("", "candidate objectives", ...candidates.slice(0, 5).map((candidate) =>
+      `- ${candidate.id} [${candidate.confidence ?? "?"}] ${candidate.kind}: ${candidate.label}`));
+  }
+  if (progressSignals.length) {
+    base.push("", `progress       ${progressSignals.join(", ")}`);
+  }
+  if (loopSignals.length) {
+    base.push(`loops          ${loopSignals.join(", ")}`);
+  }
   if (reasons.length) {
     base.push("", "score reasons", ...reasons.map((reason) => `- ${reason}`));
   }
@@ -625,6 +642,7 @@ function renderMinimap(telemetry) {
   const rankedIds = minimap.ranked_affordance_ids || [];
   const topRankIds = new Set(rankedIds.slice(0, 3));
   const targetAffordanceId = telemetry.navigation?.target_affordance?.id || null;
+  const activeObjectiveId = telemetry.navigation?.objective_state?.active_objective?.id || telemetry.navigation?.active_objective?.id || null;
 
   const objectMarkers = new Map();
   const warpMarkers = new Map();
@@ -735,6 +753,7 @@ function renderMinimap(telemetry) {
     "◎ target tile  · path  cyan line trigger region",
     "gold border current target  blue border top-ranked",
     `visited maps   ${(minimap.visited_maps || []).length}`,
+    `objective      ${activeObjectiveId ?? "none"}`,
     `target         ${telemetry.navigation?.target_affordance?.id ?? "none"}`,
   ];
   minimapLegendBlockEl.textContent = lines.join("\n");
@@ -749,13 +768,23 @@ function formatAffordancesBlock(telemetry) {
     .slice(0, 8)
     .map((affordance, index) => {
       const reasons = (affordance.score_reasons || []).slice(0, 2).join(", ");
-      return `${index + 1}. [${affordance.score}] ${affordance.id}\n   ${affordance.label}\n   ${reasons || affordance.kind}`;
+      const semanticTags = (affordance.semantic_tags || []).slice(0, 3).join(", ");
+      const hints = (affordance.identity_hints || []).slice(0, 3).join(", ");
+      const pathBits = [];
+      if (typeof affordance.reachability?.path_length === "number") {
+        pathBits.push(`path=${affordance.reachability.path_length}`);
+      }
+      if (affordance.novelty) {
+        pathBits.push(`novelty=${affordance.novelty}`);
+      }
+      return `${index + 1}. [${affordance.score}] ${affordance.id}\n   ${affordance.label}\n   ${reasons || affordance.kind}\n   ${semanticTags || "no tags"}${hints ? ` | ${hints}` : ""}${pathBits.length ? ` | ${pathBits.join(" ")}` : ""}`;
     })
     .join("\n\n");
 }
 
 function formatMemoryBlock(telemetry) {
   const memory = telemetry.navigation?.memory || {};
+  const objectiveState = telemetry.navigation?.objective_state || {};
   const top = memory.top_affordances || [];
   return [
     "visited maps",
@@ -766,6 +795,22 @@ function formatMemoryBlock(telemetry) {
     "",
     "recent progress",
     joinLines(memory.recent_progress || [], "none"),
+    "",
+    "recent objective progress",
+    (objectiveState.objective_progress || []).length
+      ? objectiveState.objective_progress
+          .slice(-6)
+          .map((entry) => `${entry.id} success=${entry.success ? "yes" : "no"} partial=${entry.partial ? "yes" : "no"} signals=${(entry.progress_signals || []).join(", ") || "none"}`)
+          .join("\n")
+      : "none",
+    "",
+    "objective invalidations",
+    (objectiveState.objective_invalidations || []).length
+      ? objectiveState.objective_invalidations
+          .slice(-6)
+          .map((entry) => `${entry.id}: ${entry.reason}`)
+          .join("\n")
+      : "none",
     "",
     "top affordances",
     top.length
@@ -783,6 +828,7 @@ function formatDecisionBlock(agentContext, agentStatus) {
   const heuristic = agentContext.heuristic_next_action || {};
   const observation = agentContext.observation || {};
   const navigation = observation.navigation || {};
+  const objectiveState = agentContext.objective_state || {};
   const startup = getAgentStartupInfo(agentStatus);
   return [
     `agent state     ${agentStatus.state}`,
@@ -794,9 +840,10 @@ function formatDecisionBlock(agentContext, agentStatus) {
     `steps           ${agentStatus.step_count}`,
     `thread          ${agentStatus.thread_id ?? "none"}`,
     startup ? `startup         ${startup.phase} (${startup.elapsedLabel})` : null,
-    `objective       ${agentContext.objective ?? "none"}`,
+    `objective       ${objectiveState.active_objective?.label ?? "none"}`,
     "",
     `last action     ${decision.action ?? "none"}`,
+    decision.objective_id ? `objective id    ${decision.objective_id}` : null,
     decision.affordance_id ? `affordance      ${decision.affordance_id}` : null,
     `reason          ${decision.reason ?? "none"}`,
     `result mode     ${result.mode ?? "none"}`,
@@ -804,6 +851,7 @@ function formatDecisionBlock(agentContext, agentStatus) {
     navigation.target_affordance?.label ? `target          ${navigation.target_affordance.label}` : null,
     "",
     `heuristic       ${heuristic.action ?? "none"}`,
+    heuristic.objective_id ? `heuristic obj   ${heuristic.objective_id}` : null,
     `heuristic why   ${heuristic.reason ?? "none"}`,
     `queued prompt   ${formatPreview(agentStatus.pending_prompt)}`,
     agentStatus.last_error ? "" : null,

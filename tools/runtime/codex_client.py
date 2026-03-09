@@ -19,6 +19,7 @@ def _runtime_tool_spec(
     description: str,
     *,
     supports_affordance_id: bool = False,
+    supports_objective_id: bool = False,
 ) -> dict[str, Any]:
     properties: dict[str, Any] = {
         "reason": {
@@ -30,6 +31,11 @@ def _runtime_tool_spec(
         properties["affordance_id"] = {
             "type": "string",
             "description": "Optional affordance id from the current ranked affordance list when you want to pursue a specific target.",
+        }
+    if supports_objective_id:
+        properties["objective_id"] = {
+            "type": "string",
+            "description": "Optional objective id from the current objective candidate list when you want to bind the execution window to a specific objective.",
         }
     return {
         "name": name,
@@ -56,7 +62,11 @@ RUNTIME_DYNAMIC_TOOLS: list[dict[str, Any]] = [
         "Let the runtime pursue a specific affordance target for several verified steps. Pass affordance_id from the current ranked affordance list to choose explicitly.",
         supports_affordance_id=True,
     ),
-    _runtime_tool_spec("follow_objective", "Let the runtime follow the current navigation objective for several verified steps."),
+    _runtime_tool_spec(
+        "follow_objective",
+        "Let the runtime follow the current inferred objective for several verified steps. Pass objective_id from the current candidate objective list to bind the window to a specific objective.",
+        supports_objective_id=True,
+    ),
     _runtime_tool_spec("follow_interaction", "Let the runtime resolve the current dialogue, menu, naming, or battle interaction for several verified steps."),
     _runtime_tool_spec("wait_short", "Wait briefly for scripted movement, transitions, or text to update."),
     _runtime_tool_spec("save_quick", "Save the current quick checkpoint."),
@@ -183,17 +193,7 @@ class CodexAppServerClient:
     ) -> dict[str, Any]:
         self.start()
         allowed_ids = [action["id"] for action in context["allowed_actions"]]
-        model_input = json.dumps(
-            {
-                "objective": context["objective"],
-                "rules": context["rules"],
-                "allowed_actions": context["allowed_actions"],
-                "heuristic_next_action": context["heuristic_next_action"],
-                "model_input": context.get("model_input"),
-            },
-            ensure_ascii=True,
-            indent=2,
-        )
+        model_input = json.dumps(context.get("model_input") or {}, ensure_ascii=True, separators=(",", ":"))
         output_schema = {
             "type": "object",
             "properties": {
@@ -207,21 +207,17 @@ class CodexAppServerClient:
                 "affordance_id": {
                     "type": ["string", "null"],
                 },
+                "objective_id": {
+                    "type": ["string", "null"],
+                },
             },
-            "required": ["action", "reason", "affordance_id"],
+            "required": ["action", "reason", "affordance_id", "objective_id"],
             "additionalProperties": False,
         }
-        prompt = (
-            f"{context['prompt']}\n"
-            "Use the provided runtime tools to interact with the game instead of describing an action in prose. "
-            "Prefer exactly one tool call per turn. If a tool reports it is invalid for the current state, choose a different tool. "
-            "If you want to steer overworld exploration yourself, use follow_target with an affordance_id from the ranked affordances in the structured context. "
-            "After acting, return the JSON object only."
-        )
         inputs: list[dict[str, Any]] = [
             {
                 "type": "text",
-                "text": prompt,
+                "text": context["prompt"],
             }
         ]
         if operator_prompt:
@@ -239,8 +235,7 @@ class CodexAppServerClient:
             {
                 "type": "text",
                 "text": (
-                    "Structured context JSON follows. Use it as the source of truth, especially for "
-                    "map warps, objects, navigation objective, recent movement results, and allowed actions.\n"
+                    "Structured turn input JSON follows. Use it as the only game-state source of truth for this turn.\n"
                     f"{model_input}"
                 ),
             }
@@ -279,6 +274,8 @@ class CodexAppServerClient:
             }
             if tool_record and tool_record.get("affordance_id"):
                 decision["affordance_id"] = tool_record["affordance_id"]
+            if tool_record and tool_record.get("objective_id"):
+                decision["objective_id"] = tool_record["objective_id"]
         else:
             raise CodexAppServerError(
                 f"Turn '{turn_id}' completed without a tool call or agent message. "
@@ -292,6 +289,8 @@ class CodexAppServerClient:
             }
             if tool_record.get("affordance_id"):
                 decision["affordance_id"] = tool_record["affordance_id"]
+            if tool_record.get("objective_id"):
+                decision["objective_id"] = tool_record["objective_id"]
         return {
             "decision": decision,
             "thread_id": self._require_thread_id(),
@@ -562,10 +561,14 @@ class CodexAppServerClient:
         affordance_id = payload.get("affordance_id")
         if affordance_id is not None and not isinstance(affordance_id, str):
             raise CodexAppServerError(f"Agent returned invalid affordance_id payload: {payload}")
+        objective_id = payload.get("objective_id")
+        if objective_id is not None and not isinstance(objective_id, str):
+            raise CodexAppServerError(f"Agent returned invalid objective_id payload: {payload}")
         return {
             "action": action,
             "reason": reason.strip(),
             "affordance_id": affordance_id,
+            "objective_id": objective_id,
         }
 
     def _next_request_id(self) -> int:

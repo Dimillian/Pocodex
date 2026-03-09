@@ -4,7 +4,7 @@ from collections import deque
 from typing import Any
 
 from .map_data import MapCatalog, build_walkability_grid
-from .objective_manager import build_affordances, build_current_objective
+from .objective_inference import build_affordances, build_objective_state, find_objective_by_id
 from .world_model import build_world_model
 
 
@@ -85,23 +85,36 @@ def enrich_snapshot_with_navigation(
             for trigger in map_info.triggers
         ]
 
-    affordances = build_affordances(snapshot, map_info=map_info, map_catalog=map_catalog)
-    objective = build_current_objective(
+    affordances = build_affordances(
         snapshot,
         map_info=map_info,
         map_catalog=map_catalog,
+        progress_memory=progress_memory,
+    )
+    objective_state = build_objective_state(
+        snapshot,
         affordances=affordances,
         decision_state=decision_state or {},
+        progress_memory=progress_memory,
+        navigation_state=navigation_state,
     )
+    active_objective = objective_state.get("active_objective")
     world_model = build_world_model(
         snapshot,
         affordances=affordances,
         progress_memory=progress_memory,
-        objective=objective,
     )
     snapshot["navigation"] = {
-        "objective": objective,
-        "milestone": objective.get("milestone") if objective else None,
+        "objective": active_objective,
+        "active_objective": active_objective,
+        "objective_state": objective_state,
+        "candidate_objectives": objective_state.get("candidate_objectives", []),
+        "objective_history": objective_state.get("objective_history", []),
+        "objective_progress": objective_state.get("objective_progress", []),
+        "objective_invalidations": objective_state.get("objective_invalidations", []),
+        "recent_map_history": objective_state.get("recent_map_history", []),
+        "progress_signals": objective_state.get("progress_signals", []),
+        "loop_signals": objective_state.get("loop_signals", []),
         "affordances": affordances,
         "target_affordance": world_model["target_affordance"],
         "target_reason": world_model["target_reason"],
@@ -121,7 +134,7 @@ def enrich_snapshot_with_navigation(
             snapshot,
             map_info=map_info,
             map_catalog=map_catalog,
-            objective=objective,
+            objective=active_objective,
             target_affordance=world_model["target_affordance"],
             ranked_affordances=world_model["ranked_affordances"],
             progress_memory=progress_memory,
@@ -134,6 +147,8 @@ def choose_field_action(
     *,
     decision_state: dict[str, Any],
     map_catalog: MapCatalog,
+    strategy: str = "objective",
+    objective_id: str | None = None,
     preferred_affordance_id: str | None = None,
 ) -> dict[str, Any]:
     if snapshot["map"]["id"] == 0 and snapshot["map"]["x"] == 0 and snapshot["map"]["y"] == 0:
@@ -143,54 +158,38 @@ def choose_field_action(
             "reason": "At the title screen, the next deterministic step is opening the menu.",
         }
 
-    objective = snapshot.get("navigation", {}).get("objective")
+    objective = _resolve_objective(snapshot, objective_id)
     target_affordance = _resolve_target_affordance(snapshot, preferred_affordance_id)
     map_info = map_catalog.get_by_id(snapshot["map"]["id"])
 
-    if objective and objective["kind"] == "script_progress":
+    if strategy == "objective" and objective and objective["kind"] in {"continue_script", "stabilize_transition"}:
         return {
             "type": "tick",
-            "frames": 20,
+            "frames": 20 if objective["kind"] == "continue_script" else 12,
             "reason": objective["label"],
         }
 
-    if target_affordance is not None:
-        path = _path_to_objective(snapshot, target_affordance, map_info=map_info, map_catalog=map_catalog)
-        if target_affordance["kind"] == "warp":
-            if path:
-                return _path_step(path, target_affordance["label"])
-            return _step_toward_point(snapshot, decision_state, target_affordance, exact=True)
-        if target_affordance["kind"] == "trigger_region":
-            if path:
-                return _path_step(path, target_affordance["label"])
-            return _step_toward_region(snapshot, target_affordance)
-        if target_affordance["kind"] == "object":
-            if path:
-                return _path_step(path, target_affordance["label"])
-            return _step_toward_object(snapshot, decision_state, target_affordance)
-        if target_affordance["kind"] == "bg_event":
-            if path:
-                return _path_step(path, target_affordance["label"])
-            return _step_toward_point(snapshot, decision_state, target_affordance, exact=False)
-
-    if objective is None:
+    focus = target_affordance if strategy == "target" else objective
+    if focus is None and strategy == "objective":
         return _fallback_exploration(snapshot, decision_state)
-    path = _path_to_objective(snapshot, objective, map_info=map_info, map_catalog=map_catalog)
+    if focus is None:
+        focus = target_affordance
 
-    if objective["kind"] == "warp":
-        if path:
-            return _path_step(path, objective["label"])
-        return _step_toward_point(snapshot, decision_state, objective, exact=True)
-
-    if objective["kind"] == "trigger_region":
-        if path:
-            return _path_step(path, objective["label"])
-        return _step_toward_region(snapshot, objective)
-
-    if objective["kind"] == "object":
-        if path:
-            return _path_step(path, objective["label"])
-        return _step_toward_object(snapshot, decision_state, objective)
+    navigation_target = (focus or {}).get("navigation_target") if strategy == "objective" else focus
+    if navigation_target is not None:
+        path = _path_to_objective(snapshot, navigation_target, map_info=map_info, map_catalog=map_catalog)
+        if navigation_target["kind"] == "warp":
+            if path:
+                return _path_step(path, focus["label"])
+            return _step_toward_point(snapshot, decision_state, navigation_target, exact=True)
+        if navigation_target["kind"] == "trigger_region":
+            if path:
+                return _path_step(path, focus["label"])
+            return _step_toward_region(snapshot, navigation_target, label=focus["label"])
+        if navigation_target["kind"] in {"object", "bg_event"}:
+            if path:
+                return _path_step(path, focus["label"])
+            return _step_toward_interactable(snapshot, decision_state, navigation_target, label=focus["label"])
 
     return _fallback_exploration(snapshot, decision_state)
 
@@ -205,6 +204,14 @@ def _resolve_target_affordance(snapshot: dict[str, Any], preferred_affordance_id
             if affordance["id"] == preferred_affordance_id:
                 return affordance
     return navigation.get("target_affordance")
+
+
+def _resolve_objective(snapshot: dict[str, Any], objective_id: str | None) -> dict[str, Any] | None:
+    objective = find_objective_by_id(snapshot, objective_id)
+    if objective is not None:
+        return objective
+    navigation = snapshot.get("navigation") or {}
+    return navigation.get("active_objective") or navigation.get("objective")
 
 
 def _build_minimap_model(
@@ -225,7 +232,8 @@ def _build_minimap_model(
         return None
 
     walkable_grid, tile_grid = grid_data
-    focus = target_affordance or objective
+    focus = (objective or {}).get("navigation_target") if objective else None
+    focus = focus or target_affordance
     blocked = _blocked_positions(snapshot, focus or {"kind": "none"})
     target_tiles = sorted(_objective_targets(snapshot, focus, walkable_grid, blocked)) if focus else []
     path = _path_to_objective(snapshot, focus, map_info=map_info, map_catalog=map_catalog) if focus else []
@@ -281,6 +289,7 @@ def update_navigation_state(
     before_pos = (before["map"]["x"], before["map"]["y"])
     after_pos = (after["map"]["x"], after["map"]["y"])
     map_changed = before["map"]["id"] != after["map"]["id"]
+    facing_changed = before["movement"].get("facing") != after["movement"].get("facing")
     result: str
     if map_changed:
         result = "transitioned"
@@ -299,6 +308,12 @@ def update_navigation_state(
     elif after["dialogue"]["active"] or after["menu"]["active"]:
         result = "interaction"
         navigation_state["consecutive_failures"] = 0
+        navigation_state["blocked_directions"] = []
+    elif facing_changed:
+        # Short face_* routines use directional inputs without intending to move.
+        result = "reoriented"
+        navigation_state["consecutive_failures"] = 0
+        navigation_state["blocked_directions"] = []
     else:
         result = "blocked"
         navigation_state["consecutive_failures"] = navigation_state.get("consecutive_failures", 0) + 1
@@ -347,9 +362,15 @@ def _step_toward_point(
     )
 
 
-def _step_toward_object(snapshot: dict[str, Any], decision_state: dict[str, Any], objective: dict[str, Any]) -> dict[str, Any]:
+def _step_toward_interactable(
+    snapshot: dict[str, Any],
+    decision_state: dict[str, Any],
+    target: dict[str, Any],
+    *,
+    label: str,
+) -> dict[str, Any]:
     current = (snapshot["map"]["x"], snapshot["map"]["y"])
-    object_pos = (objective["target"]["x"], objective["target"]["y"])
+    object_pos = (target["target"]["x"], target["target"]["y"])
     if _manhattan(current, object_pos) == 1:
         desired_facing = _direction_toward(current, object_pos)
         current_facing = snapshot["movement"]["facing"]
@@ -357,15 +378,15 @@ def _step_toward_object(snapshot: dict[str, Any], decision_state: dict[str, Any]
             return {
                 "type": "action",
                 "button": "a",
-                "reason": f"Facing the objective for {objective['label']}; interact with A.",
+                "reason": f"Facing the objective for {label}; interact with A.",
             }
         return {
             "type": "routine",
             "name": f"face_{desired_facing}",
-            "reason": f"Face toward the objective for {objective['label']}.",
+            "reason": f"Face toward the objective for {label}.",
         }
 
-    approach_tiles = objective.get("approach_tiles", [])
+    approach_tiles = target.get("approach_tiles", [])
     if approach_tiles:
         best_tile = min(
             approach_tiles,
@@ -374,21 +395,22 @@ def _step_toward_object(snapshot: dict[str, Any], decision_state: dict[str, Any]
         return _directional_step(
             snapshot,
             target=(best_tile["x"], best_tile["y"]),
-            reason=objective["label"],
+            reason=label,
         )
 
     return _fallback_exploration(snapshot, decision_state)
 
 
-def _step_toward_region(snapshot: dict[str, Any], objective: dict[str, Any]) -> dict[str, Any]:
-    axis = objective["axis"]
-    value = objective["value"]
+def _step_toward_region(snapshot: dict[str, Any], target: dict[str, Any], *, label: str | None = None) -> dict[str, Any]:
+    axis = target["axis"]
+    value = target["value"]
+    objective_label = label or target["label"]
     current = snapshot["map"][axis]
     if current == value:
         return {
             "type": "tick",
             "frames": 20,
-            "reason": f"Standing on the trigger region for {objective['label']}; wait for the script to react.",
+            "reason": f"Standing on the trigger region for {objective_label}; wait for the script to react.",
         }
 
     if axis == "y":
@@ -398,7 +420,7 @@ def _step_toward_region(snapshot: dict[str, Any], objective: dict[str, Any]) -> 
     return {
         "type": "routine",
         "name": f"move_{direction}",
-        "reason": f"{objective['label']} Move {direction} to reach {axis.upper()} == {value}.",
+        "reason": f"{objective_label} Move {direction} to reach {axis.upper()} == {value}.",
     }
 
 
@@ -456,6 +478,14 @@ def _objective_targets(
         return {target}
 
     if objective["kind"] == "object":
+        targets: set[tuple[int, int]] = set()
+        for tile in objective.get("approach_tiles", []):
+            coord = (tile["x"], tile["y"])
+            if coord == (snapshot["map"]["x"], snapshot["map"]["y"]) or _is_walkable(coord, walkable_grid, blocked):
+                targets.add(coord)
+        return targets
+
+    if objective["kind"] == "bg_event":
         targets: set[tuple[int, int]] = set()
         for tile in objective.get("approach_tiles", []):
             coord = (tile["x"], tile["y"])

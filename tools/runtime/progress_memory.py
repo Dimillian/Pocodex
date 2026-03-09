@@ -11,6 +11,7 @@ def fresh_progress_memory() -> dict[str, Any]:
         "affordances": {},
         "recent_targets": deque(maxlen=12),
         "recent_progress": deque(maxlen=20),
+        "pending_interaction": None,
     }
 
 
@@ -40,6 +41,7 @@ def summarize_progress_memory(state: dict[str, Any]) -> dict[str, Any]:
         "visited_maps": sorted(state.get("visited_maps", set())),
         "recent_targets": list(state.get("recent_targets", ())),
         "recent_progress": list(state.get("recent_progress", ())),
+        "pending_interaction": state.get("pending_interaction"),
         "top_affordances": ranked[:8],
     }
 
@@ -52,18 +54,24 @@ def affordance_memory_key(snapshot: dict[str, Any], affordance: dict[str, Any]) 
 def update_progress_memory(state: dict[str, Any], *, before: dict[str, Any], after: dict[str, Any]) -> None:
     _remember_map(state, before)
     _remember_map(state, after)
+    _resolve_pending_interaction(state, before=before, after=after)
 
     target = (before.get("navigation") or {}).get("target_affordance")
     if not target:
         objective = (before.get("navigation") or {}).get("objective")
-        if objective and objective.get("affordance_id"):
+        if objective and objective.get("target_affordance_ids"):
+            navigation_target = objective.get("navigation_target") or {}
             target = {
-                "id": objective["affordance_id"],
-                "kind": objective["kind"],
+                "id": objective["target_affordance_ids"][0],
+                "kind": navigation_target.get("kind", objective["kind"]),
                 "label": objective["label"],
-                **{key: value for key, value in objective.items() if key not in {"affordance_id", "milestone", "label"}},
+                **{
+                    key: value
+                    for key, value in navigation_target.items()
+                    if key not in {"id", "label", "semantic_tags", "identity_hints", "reachability"}
+                },
             }
-    if not target or target.get("kind") == "script_progress":
+    if not target or target.get("kind") in {"script_progress", "continue_script", "stabilize_transition"}:
         return
 
     key = affordance_memory_key(before, target)
@@ -81,12 +89,14 @@ def update_progress_memory(state: dict[str, Any], *, before: dict[str, Any], aft
             "noop_count": 0,
             "blocked_count": 0,
             "stale_count": 0,
+            "consumed_count": 0,
             "last_outcome": None,
             "last_frame": None,
             "lifecycle": "unseen",
             "successful_before_signatures": [],
             "successful_after_signatures": [],
             "noop_before_signatures": [],
+            "consumed_field_signatures": [],
         },
     )
     stats["selected_count"] += 1
@@ -105,6 +115,13 @@ def update_progress_memory(state: dict[str, Any], *, before: dict[str, Any], aft
         _remember_signature(stats["successful_after_signatures"], after_signature)
         state["recent_progress"].append(f"{key}:progress")
         stats["lifecycle"] = "useful"
+        if _starts_transient_interaction(before, after, target):
+            state["pending_interaction"] = {
+                "key": key,
+                "field_signature": before_signature,
+                "target_kind": target.get("kind"),
+                "target_id": target.get("id"),
+            }
     elif before_distance is not None and after_distance is not None and after_distance < before_distance:
         outcome = "approached"
         stats["approach_count"] += 1
@@ -205,6 +222,52 @@ def _made_progress(
     if _party_progress_signature(before.get("party")) != _party_progress_signature(after.get("party")):
         return True
     return False
+
+
+def _starts_transient_interaction(before: dict[str, Any], after: dict[str, Any], target: dict[str, Any]) -> bool:
+    if before["mode"] != "field":
+        return False
+    if target.get("kind") not in {"bg_event", "object"}:
+        return False
+    if after["mode"] == "field":
+        return False
+    after_interaction = (after.get("interaction") or {}).get("type")
+    if after_interaction in {"dialogue", "pokedex_info", "menu_dialogue", "list_choice", "text_entry", "binary_choice"}:
+        return True
+    if (after.get("battle") or {}).get("ui_state") == "dialogue":
+        return True
+    dialogue = after.get("dialogue") or {}
+    if dialogue.get("active") or dialogue.get("visible_lines"):
+        return True
+    return False
+
+
+def _resolve_pending_interaction(state: dict[str, Any], *, before: dict[str, Any], after: dict[str, Any]) -> None:
+    pending = state.get("pending_interaction")
+    if not pending:
+        return
+    if before["mode"] == "field":
+        return
+    if after["mode"] != "field":
+        return
+
+    key = pending.get("key")
+    if not key:
+        state["pending_interaction"] = None
+        return
+
+    stats = state.get("affordances", {}).get(key)
+    if stats is None:
+        state["pending_interaction"] = None
+        return
+
+    if progress_state_signature(after) == pending.get("field_signature"):
+        stats["consumed_count"] = int(stats.get("consumed_count", 0)) + 1
+        stats["lifecycle"] = "stale"
+        stats["last_outcome"] = "consumed"
+        _remember_signature(stats.setdefault("consumed_field_signatures", []), pending["field_signature"])
+        state["recent_progress"].append(f"{key}:consumed")
+    state["pending_interaction"] = None
 
 
 def _is_stale_noop(before_distance: int | None, after_distance: int | None) -> bool:

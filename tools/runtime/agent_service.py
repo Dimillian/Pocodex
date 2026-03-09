@@ -270,12 +270,15 @@ class AgentController:
                     }
                     if tool_result.get("affordance_id"):
                         decision["affordance_id"] = tool_result["affordance_id"]
+                    if tool_result.get("objective_id"):
+                        decision["objective_id"] = tool_result["objective_id"]
                 else:
                     try:
                         result = self.session.execute_agent_action(
                             action_id,
                             reason,
                             affordance_id=decision.get("affordance_id"),
+                            objective_id=decision.get("objective_id"),
                         )
                     except ValueError as exc:
                         fallback_action = "wait_short"
@@ -370,6 +373,16 @@ class AgentController:
                 {
                     "action": context["heuristic_next_action"]["action"],
                     "reason": context["heuristic_next_action"]["reason"],
+                    **(
+                        {"affordance_id": context["heuristic_next_action"]["affordance_id"]}
+                        if context["heuristic_next_action"].get("affordance_id")
+                        else {}
+                    ),
+                    **(
+                        {"objective_id": context["heuristic_next_action"]["objective_id"]}
+                        if context["heuristic_next_action"].get("objective_id")
+                        else {}
+                    ),
                 },
                 {},
             )
@@ -429,8 +442,14 @@ class AgentController:
     def _handle_codex_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         reason = arguments.get("reason")
         affordance_id = arguments.get("affordance_id")
+        objective_id = arguments.get("objective_id")
         try:
-            result = self.session.execute_agent_action(tool_name, reason, affordance_id=affordance_id)
+            result = self.session.execute_agent_action(
+                tool_name,
+                reason,
+                affordance_id=affordance_id,
+                objective_id=objective_id,
+            )
         except ValueError as exc:
             context = self.session.agent_context()
             record = {
@@ -438,6 +457,7 @@ class AgentController:
                 "action": tool_name,
                 "reason": reason,
                 "affordance_id": affordance_id,
+                "objective_id": objective_id,
                 "success": False,
                 "error": str(exc),
                 "allowed_actions": [action["id"] for action in context["allowed_actions"]],
@@ -470,6 +490,7 @@ class AgentController:
             "action": result.get("agent_action", {}).get("action_id", tool_name),
             "reason": reason,
             "affordance_id": affordance_id,
+            "objective_id": objective_id,
             "success": True,
             "result": result_summary,
         }

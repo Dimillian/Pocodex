@@ -18,7 +18,15 @@ import warnings
 from .agent_context import build_agent_context
 from .controls import normalize_button
 from .map_data import load_map_catalog
-from .objective_manager import milestone_rank
+from .objective_inference import (
+    find_objective_by_id,
+    fresh_objective_memory,
+    objective_distance,
+    reconcile_objective_interaction_resolution,
+    record_map_history,
+    record_objective_selection,
+    update_objective_memory,
+)
 from .navigator import choose_field_action, enrich_snapshot_with_navigation, update_navigation_state
 from .progress_memory import capture_progress_memory, fresh_progress_memory, update_progress_memory
 from .symbols import load_symbol_table
@@ -119,6 +127,7 @@ class RuntimeSession:
                 "player_name": "RED",
                 "rival_name": "BLUE",
             },
+            "objective": fresh_objective_memory(),
         }
 
     def _decision_preferences(self) -> dict[str, str]:
@@ -176,6 +185,7 @@ class RuntimeSession:
                 "runtime_memory": {
                     "visited_maps": len(self._progress_memory.get("visited_maps", {})),
                     "recent_targets": len(self._progress_memory.get("recent_targets", [])),
+                    "objective_history": len((self._decision_state.get("objective") or {}).get("objective_history", [])),
                 },
             }
 
@@ -211,6 +221,7 @@ class RuntimeSession:
                 decision_state=self._decision_state,
             )
             self._update_progress_memory(before=before, after=after)
+            self._update_decision_state(after)
             if record_trace:
                 trace = self._build_action_trace(
                     kind="press",
@@ -267,6 +278,7 @@ class RuntimeSession:
                 )
                 traces.append(trace)
                 self._record_trace(trace)
+                self._update_decision_state(after)
             final_snapshot = self._snapshot_unlocked(
                 suppress_derive=True,
                 extra_events=[
@@ -310,43 +322,67 @@ class RuntimeSession:
         result["routine"] = {"name": name}
         return result
 
-    def follow_objective(self, max_steps: int = 12, *, affordance_id: str | None = None) -> dict:
-        steps: list[dict] = []
+    def follow_objective(self, max_steps: int = 6, *, objective_id: str | None = None) -> dict:
         initial_snapshot = self.telemetry()
-        snapshot = initial_snapshot
+        objective = self._select_objective(initial_snapshot, objective_id)
+        if objective is None:
+            snapshot = initial_snapshot
+            macro_trace = {
+                "timestamp": self._timestamp(),
+                "kind": "follow_objective",
+                "max_steps": max_steps,
+                "objective_id": objective_id,
+                "before": self._trace_state(initial_snapshot),
+                "after": self._trace_state(snapshot),
+                "steps": [],
+                "error": "No objective candidate is available in the current field state.",
+            }
+            self._record_trace(macro_trace)
+            snapshot["macro_trace"] = macro_trace
+            return snapshot
 
-        for _ in range(max_steps):
-            if snapshot["mode"] != "field":
-                break
-            objective = snapshot.get("navigation", {}).get("objective")
-            target_affordance = snapshot.get("navigation", {}).get("target_affordance")
-            if objective is None and target_affordance is None:
-                break
+        snapshot = self.telemetry()
+        steps = self._execute_field_window(
+            snapshot,
+            strategy="objective",
+            max_steps=max_steps,
+            objective_id=objective["id"],
+            affordance_id=None,
+        )
+        snapshot = self.telemetry()
+        progress_entry = update_objective_memory(
+            self._decision_state,
+            before=initial_snapshot,
+            after=snapshot,
+            objective=objective,
+            steps=steps,
+        )
+        snapshot = self.telemetry()
+        macro_trace = {
+            "timestamp": self._timestamp(),
+            "kind": "follow_objective",
+            "max_steps": max_steps,
+            "objective_id": objective["id"],
+            "objective": objective,
+            "progress": progress_entry,
+            "before": self._trace_state(initial_snapshot),
+            "after": self._trace_state(snapshot),
+            "steps": steps,
+        }
+        self._record_trace(macro_trace)
+        snapshot["macro_trace"] = macro_trace
+        return snapshot
 
-            decision = self._choose_field_action(snapshot, affordance_id=affordance_id)
-            decision = self._refine_field_decision(snapshot, decision)
-            if decision["type"] == "routine":
-                snapshot = self.run_routine(decision["name"])
-            elif decision["type"] == "action":
-                snapshot = self.tap(decision["button"])
-            elif decision["type"] == "tick":
-                snapshot = self.tick(decision["frames"])
-            else:
-                break
-
-            steps.append(
-                {
-                    "decision": decision,
-                    "after": self._trace_state(snapshot),
-                }
-            )
-            if snapshot["mode"] != "field":
-                break
-            if snapshot.get("navigation", {}).get("consecutive_failures", 0) >= 2:
-                break
-            if initial_snapshot.get("navigation", {}).get("milestone") != snapshot.get("navigation", {}).get("milestone"):
-                break
-
+    def follow_target(self, max_steps: int = 6, *, affordance_id: str | None = None) -> dict:
+        initial_snapshot = self.telemetry()
+        steps = self._execute_field_window(
+            initial_snapshot,
+            strategy="target",
+            max_steps=max_steps,
+            objective_id=None,
+            affordance_id=affordance_id,
+        )
+        snapshot = self.telemetry()
         macro_trace = {
             "timestamp": self._timestamp(),
             "kind": "follow_target",
@@ -359,9 +395,6 @@ class RuntimeSession:
         self._record_trace(macro_trace)
         snapshot["macro_trace"] = macro_trace
         return snapshot
-
-    def follow_target(self, max_steps: int = 12, *, affordance_id: str | None = None) -> dict:
-        return self.follow_objective(max_steps=max_steps, affordance_id=affordance_id)
 
     def follow_interaction(self, max_steps: int = 6) -> dict:
         steps: list[dict] = []
@@ -395,6 +428,12 @@ class RuntimeSession:
             if next_interaction != interaction_type:
                 break
 
+        interaction_resolution = reconcile_objective_interaction_resolution(
+            self._decision_state,
+            before=initial_snapshot,
+            after=snapshot,
+        )
+
         macro_trace = {
             "timestamp": self._timestamp(),
             "kind": "follow_interaction",
@@ -402,6 +441,7 @@ class RuntimeSession:
             "before": self._trace_state(initial_snapshot),
             "after": self._trace_state(snapshot),
             "steps": steps,
+            "interaction_resolution": interaction_resolution,
         }
         self._record_trace(macro_trace)
         snapshot["macro_trace"] = macro_trace
@@ -410,6 +450,80 @@ class RuntimeSession:
     def _refine_field_decision(self, snapshot: dict, decision: dict) -> dict:
         return decision
 
+    def _execute_field_window(
+        self,
+        snapshot: dict,
+        *,
+        strategy: str,
+        max_steps: int,
+        objective_id: str | None,
+        affordance_id: str | None,
+    ) -> list[dict[str, Any]]:
+        steps: list[dict[str, Any]] = []
+        pinned_objective_id = objective_id
+        for _ in range(max_steps):
+            if snapshot["mode"] != "field":
+                break
+
+            if strategy == "objective":
+                current_objective = self._resolve_objective(snapshot, pinned_objective_id)
+                if current_objective is None:
+                    break
+            else:
+                current_target = snapshot.get("navigation", {}).get("target_affordance")
+                if current_target is None and not affordance_id:
+                    break
+
+            decision = self._choose_field_action(
+                snapshot,
+                strategy=strategy,
+                objective_id=pinned_objective_id,
+                affordance_id=affordance_id,
+            )
+            decision = self._refine_field_decision(snapshot, decision)
+            if decision["type"] == "routine":
+                snapshot = self.run_routine(decision["name"])
+            elif decision["type"] == "action":
+                snapshot = self.tap(decision["button"])
+            elif decision["type"] == "tick":
+                snapshot = self.tick(decision["frames"])
+            else:
+                break
+
+            steps.append(
+                {
+                    "decision": decision,
+                    "after": self._trace_state(snapshot),
+                }
+            )
+            if snapshot["mode"] != "field":
+                break
+            if snapshot.get("navigation", {}).get("consecutive_failures", 0) >= 2:
+                break
+            if strategy == "objective":
+                current_objective = self._resolve_objective(snapshot, pinned_objective_id)
+                if current_objective is None:
+                    break
+        return steps
+
+    def _select_objective(self, snapshot: dict, objective_id: str | None) -> dict[str, Any] | None:
+        objective = self._resolve_objective(snapshot, objective_id)
+        if objective is None:
+            return None
+        record_objective_selection(
+            self._decision_state,
+            objective=objective,
+            frame=snapshot["frame"],
+        )
+        return objective
+
+    def _resolve_objective(self, snapshot: dict, objective_id: str | None) -> dict[str, Any] | None:
+        objective = find_objective_by_id(snapshot, objective_id)
+        if objective is not None:
+            return objective
+        navigation = snapshot.get("navigation") or {}
+        return navigation.get("active_objective") or navigation.get("objective")
+
     def _plan_objective_path(self, snapshot: dict, objective: dict, *, max_depth: int) -> list[str]:
         start_distance = self._objective_distance(snapshot, objective)
         if start_distance is None:
@@ -417,7 +531,6 @@ class RuntimeSession:
 
         start_state = self._capture_runtime_state()
         start_key = self._search_state_key(snapshot)
-        start_rank = milestone_rank(snapshot.get("navigation", {}).get("milestone"))
         frontier: list[tuple[int, int, int, dict, tuple[bytes, dict, dict, dict], list[str]]] = []
         best_distance = start_distance
         best_path: list[str] = []
@@ -446,8 +559,7 @@ class RuntimeSession:
                         continue
 
                     child_path = path + [direction]
-                    child_rank = milestone_rank(child_snapshot.get("navigation", {}).get("milestone"))
-                    if child_rank > start_rank or score == 0:
+                    if score == 0:
                         return child_path
 
                     child_key = self._search_state_key(child_snapshot)
@@ -550,6 +662,7 @@ class RuntimeSession:
         reason: str | None = None,
         *,
         affordance_id: str | None = None,
+        objective_id: str | None = None,
     ) -> dict:
         context = self.agent_context()
         actions = {action["id"]: action for action in context["allowed_actions"]}
@@ -567,7 +680,7 @@ class RuntimeSession:
         elif action_type == "routine":
             result = self.run_routine(action["name"])
         elif action_type == "macro" and action["name"] == "follow_objective":
-            result = self.follow_objective(affordance_id=affordance_id)
+            result = self.follow_objective(objective_id=objective_id)
         elif action_type == "macro" and action["name"] == "follow_target":
             result = self.follow_target(affordance_id=affordance_id)
         elif action_type == "macro" and action["name"] == "follow_interaction":
@@ -589,6 +702,7 @@ class RuntimeSession:
             "action": action,
             "reason": reason,
             "affordance_id": affordance_id,
+            "objective_id": objective_id,
             "after": self._trace_state(result),
         }
         self._record_trace(execution_trace)
@@ -659,7 +773,7 @@ class RuntimeSession:
         if mode == "menu":
             return self._choose_menu_action(snapshot, allow_dialogue_fallback=False)
         if mode == "field":
-            return self._choose_field_action(snapshot)
+            return self._choose_field_action(snapshot, strategy="objective")
         if mode == "battle":
             return self._choose_battle_action(snapshot)
         return {
@@ -705,7 +819,14 @@ class RuntimeSession:
             "reason": "Interaction state is ambiguous, so re-observe briefly.",
         }
 
-    def _choose_field_action(self, snapshot: dict, *, affordance_id: str | None = None) -> dict:
+    def _choose_field_action(
+        self,
+        snapshot: dict,
+        *,
+        strategy: str = "objective",
+        objective_id: str | None = None,
+        affordance_id: str | None = None,
+    ) -> dict:
         recent_event_types = [event["type"] for event in snapshot["events"]["recent"][-4:]]
         if snapshot["dialogue"]["active"] or snapshot["screen"].get("message_box_present"):
             return {
@@ -724,6 +845,8 @@ class RuntimeSession:
             snapshot,
             decision_state=self._decision_state,
             map_catalog=self.map_catalog,
+            strategy=strategy,
+            objective_id=objective_id,
             preferred_affordance_id=affordance_id,
         )
 
@@ -785,13 +908,6 @@ class RuntimeSession:
 
     def _score_objective_probe(self, before: dict, probe: dict, objective: dict) -> int | None:
         after = probe["snapshot"]
-        current_rank = milestone_rank(before.get("navigation", {}).get("milestone"))
-        next_rank = milestone_rank(after.get("navigation", {}).get("milestone"))
-
-        if next_rank > current_rank:
-            return 0
-        if next_rank and next_rank < current_rank:
-            return None
 
         before_distance = self._objective_distance(before, objective)
         after_distance = self._objective_distance(after, objective)
@@ -819,18 +935,7 @@ class RuntimeSession:
         return after_distance
 
     def _objective_distance(self, snapshot: dict, objective: dict) -> int | None:
-        if objective["kind"] == "trigger_region":
-            axis = objective.get("axis")
-            value = objective.get("value")
-            if axis == "y" and value is not None:
-                return abs(snapshot["map"]["y"] - value)
-            if axis == "x" and value is not None:
-                return abs(snapshot["map"]["x"] - value)
-            return None
-        target = objective.get("target")
-        if not target:
-            return None
-        return abs(snapshot["map"]["x"] - target["x"]) + abs(snapshot["map"]["y"] - target["y"])
+        return objective_distance(snapshot, objective)
 
     def _search_state_key(self, snapshot: dict) -> tuple:
         return (
@@ -841,7 +946,7 @@ class RuntimeSession:
             snapshot["map"]["script"],
             tuple(snapshot["dialogue"]["visible_lines"]),
             snapshot["menu"]["active"],
-            snapshot.get("navigation", {}).get("milestone"),
+            ((snapshot.get("navigation") or {}).get("active_objective") or {}).get("id"),
         )
 
     def _choose_menu_action(self, snapshot: dict, *, allow_dialogue_fallback: bool) -> dict:
@@ -1134,6 +1239,7 @@ class RuntimeSession:
         }
 
     def _update_decision_state(self, snapshot: dict) -> None:
+        record_map_history(self._decision_state, snapshot)
         dialogue = " ".join(snapshot["dialogue"]["visible_lines"]).lower()
         intro_markers = (
             "hello there",
@@ -1538,6 +1644,7 @@ class RuntimeSession:
     def _reset_runtime_memory_unlocked(self) -> None:
         self._navigation_state = self._fresh_navigation_state()
         self._progress_memory = fresh_progress_memory()
+        self._decision_state = self._fresh_decision_state()
 
     def frame_png(self) -> bytes:
         with self._lock:

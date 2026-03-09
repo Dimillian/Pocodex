@@ -129,7 +129,7 @@ class TrainerStateTelemetryTests(unittest.TestCase):
         self.assertEqual(party["members"][1]["status"], "PSN")
         self.assertTrue(party["members"][1]["fainted"])
 
-    def test_agent_prompt_summarizes_trainer_state_compactly(self) -> None:
+    def test_agent_context_keeps_rich_state_but_compacts_model_input(self) -> None:
         snapshot = {
             "mode": "field",
             "interaction": {"type": "field"},
@@ -187,9 +187,26 @@ class TrainerStateTelemetryTests(unittest.TestCase):
         self.assertEqual(context["observation"]["party"]["count"], 2)
         self.assertEqual(context["observation"]["inventory"]["count"], 6)
         self.assertEqual(context["observation"]["trainer"]["money"], 1234)
-        self.assertIn("Party summary: RED lv5 20/30 OK, BLUE lv8 12/24 PAR", context["prompt"])
-        self.assertIn("Inventory summary: 6 items: POKé BALL x5, POTION x2, ANTIDOTE x1, ESCAPE ROPE x1, TOWN MAP x1, +1 more", context["prompt"])
-        self.assertIn("Trainer summary: money=1234 badges=2 [BOULDERBADGE, THUNDERBADGE]", context["prompt"])
+        self.assertNotIn("Party summary:", context["prompt"])
+        self.assertNotIn("Inventory summary:", context["prompt"])
+        self.assertNotIn("Trainer summary:", context["prompt"])
+        self.assertEqual(context["model_input"]["version"], 2)
+        self.assertEqual(context["model_input"]["mode"], "field")
+        self.assertNotIn("world_state", context["model_input"])
+        self.assertNotIn("objective_state", context["model_input"])
+        self.assertNotIn("affordances", context["model_input"])
+        self.assertEqual(
+            context["model_input"]["state"]["resources"]["party_summary"],
+            "RED lv5 20/30 OK, BLUE lv8 12/24 PAR",
+        )
+        self.assertEqual(
+            context["model_input"]["state"]["resources"]["inventory_summary"],
+            "6 items: POKé BALL x5, POTION x2, ANTIDOTE x1, ESCAPE ROPE x1, TOWN MAP x1, +1 more",
+        )
+        self.assertEqual(
+            context["model_input"]["state"]["resources"]["trainer_summary"],
+            "money=1234 badges=2 [BOULDERBADGE, THUNDERBADGE]",
+        )
 
     def test_hp_only_party_changes_do_not_count_as_progress(self) -> None:
         before = {

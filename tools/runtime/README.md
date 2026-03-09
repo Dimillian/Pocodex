@@ -95,27 +95,33 @@ Available ROM values:
 - extracted dialogue text from the standard bottom message box
 - validated menu extraction that only activates when a visible cursor is on screen
 - a rolling event log for mode, map, menu, dialogue, and battle transitions
+- semantic affordances and inferred objective memory inside `navigation`
 
 `GET /snapshot` returns telemetry plus a base64-encoded PNG from the same locked
 runtime read, which keeps the UI frame and the agent-visible state in sync.
 
 `GET /agent_context` currently includes:
 
-- a compact observation distilled from telemetry
-- structured model input with:
-  - map names, sizes, warps, and objects
-  - movement and facing state
-  - party, bag, money, and badge state
-  - current navigation objective
-  - recent movement and transition results
+- `world_state`, a compact strategic view of the current snapshot
+- `affordances`, semantic nearby exits / entities / triggers / inspectables
+- `objective_state`, including:
+  - active objective
+  - candidate objectives with confidence and evidence
+  - recent objective progress and invalidations
+  - recent map history
+  - progress and loop signals
+- structured model input built from those fields
 - recent events and recent action traces
 - decision state
 - allowed next actions for the current mode
 - a heuristic next-action hint
-- a JSON-only prompt string for an external LLM decision step
+- a compact `model_input` payload for the external LLM decision step
+- a short fixed prompt string; the detailed runtime state now lives in `model_input`
 
 `POST /execute_action` accepts one validated action id chosen from the current
 `allowed_actions` list in `/agent_context` and executes it through the runtime.
+Field-mode objective windows can include `objective_id`; tactical target
+overrides can include `affordance_id`.
 
 `GET /agent/status` returns the live state of the built-in UI agent controller,
 including whether it is running, the current Codex thread/turn ids, the last
@@ -155,6 +161,7 @@ curl -X POST http://127.0.0.1:8765/agent/stop
 curl -X POST http://127.0.0.1:8765/agent/prompt -H 'content-type: application/json' -d '{"prompt":"Prioritize leaving the house and interact with any visible sign first."}'
 curl -X POST http://127.0.0.1:8765/agent/prompt/clear
 curl -X POST http://127.0.0.1:8765/execute_action -H 'content-type: application/json' -d '{"action":"press_start","reason":"open the title menu"}'
+curl -X POST http://127.0.0.1:8765/execute_action -H 'content-type: application/json' -d '{"action":"follow_objective","reason":"bind to the top inferred objective","objective_id":"reach_exit:warp:0"}'
 curl -o frame.png http://127.0.0.1:8765/frame
 curl -X POST http://127.0.0.1:8765/tick -H 'content-type: application/json' -d '{"frames": 60}'
 curl -X POST http://127.0.0.1:8765/action -H 'content-type: application/json' -d '{"button": "start"}'
@@ -197,7 +204,8 @@ It currently:
     Codex thread in `.runtime-traces/agent-runner/codex-thread.json`
     but starts with a fresh thread by default unless `--resume-thread` is set
   - `--mode heuristic` uses the current heuristic hint directly
-- executes that action through `/execute_action`
+- executes that action through `/execute_action`, including optional
+  `objective_id` for objective windows or `affordance_id` for tactical overrides
 - logs each step to `.runtime-traces/agent-runner/steps.jsonl`
 
 This keeps the runtime focused on execution while the controller owns the

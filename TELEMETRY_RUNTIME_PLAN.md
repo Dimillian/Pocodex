@@ -298,7 +298,7 @@ Tasks:
   - signposts / background events
   - NPC/object affordances
   - early script-trigger regions parsed from map scripts
-- [x] Add a milestone/objective layer at story-beat granularity
+- [x] Add a generic inferred-objective layer with persistent objective memory
 - [x] Add a separate overworld navigation policy outside `session.py`
 - [x] Build collision-aware pathfinding from map blocks / blocksets / collision tiles
 - [x] Add macro objective following so Codex can pick subgoals instead of every tile move
@@ -311,8 +311,9 @@ Tasks:
   - remember which state an affordance was useful from
   - demote affordances once their resulting state has already been reached
   - treat repeated zero-distance no-ops as stale instead of evergreen progress
-- [x] Route navigation and agent context through `target_affordance` first, objective fallback second
+- [x] Replace target-first field planning with bound objective windows and tactical target overrides
 - [x] Let Codex choose an explicit `affordance_id` for `follow_target` instead of only following the runtime's default target
+- [x] Let Codex choose an explicit `objective_id` for `follow_objective` from inferred candidate objectives
 - [x] Reduce per-turn latency by:
   - lowering the default agent step delay
   - letting the runtime execute several verified local movement steps per agent action

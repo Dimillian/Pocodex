@@ -30,14 +30,15 @@ class RuntimeClient:
             return json.loads(response.read().decode("utf-8"))
 
 
-def choose_action(context: dict[str, Any], mode: str) -> tuple[str, str]:
+def choose_action(context: dict[str, Any], mode: str) -> tuple[str, str, str | None, str | None]:
     allowed_ids = {action["id"] for action in context["allowed_actions"]}
 
     if mode == "heuristic":
-        action_id = context["heuristic_next_action"]["action"]
+        heuristic = context["heuristic_next_action"]
+        action_id = heuristic["action"]
         if action_id not in allowed_ids:
             action_id = "wait_short"
-        return action_id, context["heuristic_next_action"]["reason"]
+        return action_id, heuristic["reason"], heuristic.get("affordance_id"), heuristic.get("objective_id")
 
     raise ValueError(f"Unsupported agent mode '{mode}'")
 
@@ -80,9 +81,9 @@ def step_once(
         action_id = decision["action"]
         reason = decision["reason"]
         affordance_id = decision.get("affordance_id")
+        objective_id = decision.get("objective_id")
     else:
-        action_id, reason = choose_action(context, mode)
-        affordance_id = None
+        action_id, reason, affordance_id, objective_id = choose_action(context, mode)
 
     record: dict[str, Any] = {
         "timestamp": datetime.now(UTC).isoformat(),
@@ -101,6 +102,8 @@ def step_once(
     }
     if affordance_id:
         record["decision"]["affordance_id"] = affordance_id
+    if objective_id:
+        record["decision"]["objective_id"] = objective_id
     if codex_result is not None:
         record["codex"] = codex_result
 
@@ -118,6 +121,7 @@ def step_once(
                 "action": action_id,
                 "reason": reason,
                 "affordance_id": affordance_id,
+                "objective_id": objective_id,
             },
         )
         record["result"] = {
@@ -218,6 +222,7 @@ def _handle_codex_runtime_tool(
 ) -> dict[str, Any]:
     reason = arguments.get("reason")
     affordance_id = arguments.get("affordance_id")
+    objective_id = arguments.get("objective_id")
     try:
         result = client.post_json(
             "/execute_action",
@@ -225,6 +230,7 @@ def _handle_codex_runtime_tool(
                 "action": tool_name,
                 "reason": reason,
                 "affordance_id": affordance_id,
+                "objective_id": objective_id,
             },
         )
     except error.HTTPError as exc:
@@ -234,6 +240,7 @@ def _handle_codex_runtime_tool(
             "action": tool_name,
             "reason": reason,
             "affordance_id": affordance_id,
+            "objective_id": objective_id,
             "success": False,
             "error": f"{exc.code} {detail}",
         }
@@ -264,6 +271,7 @@ def _handle_codex_runtime_tool(
         "action": result.get("agent_action", {}).get("action_id", tool_name),
         "reason": reason,
         "affordance_id": affordance_id,
+        "objective_id": objective_id,
         "success": True,
         "result": result_summary,
     }

@@ -2,6 +2,21 @@ from __future__ import annotations
 
 from typing import Any
 
+AGENT_GOAL = "Make forward progress in Pokemon Blue one verified action at a time."
+AGENT_RULES = [
+    "Choose exactly one next action from allowed_actions.",
+    "Prefer resolving the current interaction over guessing movement.",
+    "When a menu is visible, navigate or confirm within that menu before moving in the field.",
+    "When a preset name list is visible and a listed recommended name exists, prefer that listed option over NEW NAME or manual text entry.",
+    "In field mode, prefer follow_objective with an objective_id from candidate_objectives before falling back to direct movement.",
+    "Use follow_target only as a tactical override or debugging tool when you intentionally want a specific affordance.",
+    "When using follow_objective, include objective_id from candidate_objectives when you want to bind the execution window to a specific objective.",
+    "When using follow_target, include an affordance_id from navigation.ranked_affordances if you want to choose a specific world target yourself.",
+    "If movement fails twice in a row, prefer waiting briefly and re-observing before forcing another direction.",
+    "Use save/load only when recovery is needed, not as a normal action.",
+    "If the state is ambiguous, choose wait_short rather than inventing a risky action.",
+]
+
 
 def build_agent_context(
     snapshot: dict[str, Any],
@@ -26,81 +41,85 @@ def build_agent_context(
         }
         for trace in traces[-6:]
     ]
-    model_input = {
-        "objective": "Make forward progress in Pokemon Blue one verified action at a time.",
-        "observation": {
-            "mode": snapshot["mode"],
-            "interaction": snapshot.get("interaction"),
-            "map": snapshot["map"],
-            "movement": snapshot.get("movement"),
-            "navigation": snapshot.get("navigation"),
-            "dialogue": {
-                **snapshot["dialogue"],
-                "context": dialogue_context,
-            },
-            "naming": snapshot.get("naming"),
-            "pokedex": snapshot.get("pokedex"),
-            "party": snapshot.get("party"),
-            "inventory": snapshot.get("inventory"),
-            "trainer": snapshot.get("trainer"),
-            "menu": {
-                "active": snapshot["menu"]["active"],
-                "visible_items": snapshot["menu"]["visible_items"],
-                "selected_item_text": snapshot["menu"]["selected_item_text"],
-                "selected_index": snapshot["menu"]["selected_index"],
-            },
-            "battle": snapshot["battle"],
-            "events": recent_events,
+    navigation = snapshot.get("navigation") or {}
+    objective_state = navigation.get("objective_state") or {}
+    candidate_objectives = objective_state.get("candidate_objectives") or navigation.get("candidate_objectives") or []
+    active_objective = objective_state.get("active_objective") or navigation.get("active_objective") or navigation.get("objective")
+    world_state = {
+        "mode": snapshot["mode"],
+        "interaction": snapshot.get("interaction"),
+        "map": snapshot["map"],
+        "movement": snapshot.get("movement"),
+        "dialogue": {
+            **snapshot["dialogue"],
+            "context": dialogue_context,
         },
-        "decision_state": decision_state,
-        "recent_traces": recent_traces,
+        "naming": snapshot.get("naming"),
+        "pokedex": snapshot.get("pokedex"),
+        "party": snapshot.get("party"),
+        "inventory": snapshot.get("inventory"),
+        "trainer": snapshot.get("trainer"),
+        "menu": {
+            "active": snapshot["menu"]["active"],
+            "visible_items": snapshot["menu"]["visible_items"],
+            "selected_item_text": snapshot["menu"]["selected_item_text"],
+            "selected_index": snapshot["menu"]["selected_index"],
+        },
+        "battle": snapshot["battle"],
+        "screen": {
+            "message_box_present": snapshot["screen"]["message_box_present"],
+            "blank_ratio": snapshot["screen"]["blank_ratio"],
+            "decoded_rows": snapshot["screen"]["decoded_rows"],
+        },
+        "events": recent_events,
+        "recent_map_history": objective_state.get("recent_map_history") or navigation.get("recent_map_history") or [],
+    }
+    objective_memory = {
+        "active_objective": active_objective,
+        "objective_history": objective_state.get("objective_history") or navigation.get("objective_history") or [],
+        "objective_progress": objective_state.get("objective_progress") or navigation.get("objective_progress") or [],
+        "objective_invalidations": objective_state.get("objective_invalidations") or navigation.get("objective_invalidations") or [],
+    }
+    model_input = {
+        "version": 2,
+        "goal": AGENT_GOAL,
+        "mode": snapshot["mode"],
+        "interaction_type": (snapshot.get("interaction") or {}).get("type"),
+        "allowed_action_ids": [action["id"] for action in allowed_actions],
+        "heuristic_hint": heuristic_next_action,
+        "state": _build_mode_state(
+            snapshot,
+            dialogue_context=dialogue_context,
+            navigation=navigation,
+            candidate_objectives=candidate_objectives,
+            decision_state=decision_state,
+        ),
+        "agent_memory": _build_agent_memory(
+            world_state,
+            objective_memory=objective_memory,
+            progress_signals=objective_state.get("progress_signals") or navigation.get("progress_signals") or [],
+            loop_signals=objective_state.get("loop_signals") or navigation.get("loop_signals") or [],
+        ),
+        "recent_action_results": [_compact_trace_summary(trace) for trace in recent_traces],
     }
 
     context = {
-        "objective": "Make forward progress in Pokemon Blue one verified action at a time.",
+        "objective": AGENT_GOAL,
         "observation": {
-            "mode": snapshot["mode"],
-            "interaction": snapshot.get("interaction"),
-            "map": snapshot["map"],
-            "movement": snapshot.get("movement"),
-            "navigation": snapshot.get("navigation"),
-            "dialogue": {
-                **snapshot["dialogue"],
-                "context": dialogue_context,
-            },
-            "naming": snapshot.get("naming"),
-            "pokedex": snapshot.get("pokedex"),
-            "party": snapshot.get("party"),
-            "inventory": snapshot.get("inventory"),
-            "trainer": snapshot.get("trainer"),
-            "menu": {
-                "active": snapshot["menu"]["active"],
-                "visible_items": snapshot["menu"]["visible_items"],
-                "selected_item_text": snapshot["menu"]["selected_item_text"],
-                "selected_index": snapshot["menu"]["selected_index"],
-            },
-            "battle": snapshot["battle"],
-            "screen": {
-                "message_box_present": snapshot["screen"]["message_box_present"],
-                "blank_ratio": snapshot["screen"]["blank_ratio"],
-                "decoded_rows": snapshot["screen"]["decoded_rows"],
-            },
-            "events": recent_events,
+            **world_state,
+            "navigation": navigation,
         },
+        "world_state": world_state,
+        "affordances": navigation.get("affordances") or [],
+        "objective_state": objective_state,
+        "candidate_objectives": candidate_objectives,
+        "progress_signals": objective_state.get("progress_signals") or navigation.get("progress_signals") or [],
+        "loop_signals": objective_state.get("loop_signals") or navigation.get("loop_signals") or [],
+        "objective_memory": objective_memory,
         "decision_state": decision_state,
         "heuristic_next_action": heuristic_next_action,
         "allowed_actions": allowed_actions,
-        "rules": [
-            "Choose exactly one next action from allowed_actions.",
-            "Prefer resolving the current interaction over guessing movement.",
-            "When a menu is visible, navigate or confirm within that menu before moving in the field.",
-            "When a preset name list is visible and a listed recommended name exists, prefer that listed option over NEW NAME or manual text entry.",
-            "When navigation.target_affordance is present, prefer actions that move toward or interact with that target before relying on the older objective fallback.",
-            "When using follow_target, include an affordance_id from navigation.ranked_affordances if you want to choose a specific world target yourself.",
-            "If movement fails twice in a row, prefer waiting briefly and re-observing before forcing another direction.",
-            "Use save/load only when recovery is needed, not as a normal action.",
-            "If the state is ambiguous, choose wait_short rather than inventing a risky action.",
-        ],
+        "rules": AGENT_RULES,
         "recent_traces": recent_traces,
         "model_input": model_input,
         "output_contract": {
@@ -108,6 +127,7 @@ def build_agent_context(
             "schema": {
                 "action": "one action id from allowed_actions",
                 "reason": "short explanation grounded in the observation",
+                "objective_id": "optional objective id from objective_state.candidate_objectives when action is follow_objective",
                 "affordance_id": "optional affordance id from navigation.ranked_affordances when action is follow_target",
             },
         },
@@ -169,7 +189,7 @@ def build_allowed_actions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         actions.extend(
             [
                 {"id": "follow_target", "type": "macro", "name": "follow_target", "description": "Use local navigation to pursue the highest-confidence target affordance for several verified steps."},
-                {"id": "follow_objective", "type": "macro", "name": "follow_objective", "description": "Use local navigation to follow the current story objective for several verified steps."},
+                {"id": "follow_objective", "type": "macro", "name": "follow_objective", "description": "Use local navigation to follow the current inferred objective window for several verified steps."},
                 {"id": "move_up", "type": "routine", "name": "move_up", "description": "Attempt to move one step up."},
                 {"id": "move_down", "type": "routine", "name": "move_down", "description": "Attempt to move one step down."},
                 {"id": "move_left", "type": "routine", "name": "move_left", "description": "Attempt to move one step left."},
@@ -206,8 +226,10 @@ def build_heuristic_hint(snapshot: dict[str, Any], decision_state: dict[str, Any
     interaction = snapshot.get("interaction") or {}
     interaction_type = interaction.get("type")
     navigation = snapshot.get("navigation") or {}
-    objective = navigation.get("objective")
+    objective_state = navigation.get("objective_state") or {}
+    objective = objective_state.get("active_objective") or navigation.get("active_objective") or navigation.get("objective")
     target_affordance = navigation.get("target_affordance")
+    candidates = objective_state.get("candidate_objectives") or navigation.get("candidate_objectives") or []
     dialogue_visible = snapshot["dialogue"]["active"] or snapshot["screen"].get("message_box_present", False)
     dialogue_context = build_dialogue_context(snapshot)
     if interaction_type and interaction_type != "field":
@@ -244,16 +266,21 @@ def build_heuristic_hint(snapshot: dict[str, Any], decision_state: dict[str, Any
     if mode == "field":
         if navigation.get("consecutive_failures", 0) >= 2:
             return {"action": "wait_short", "reason": "Recent movement attempts failed; re-observe before pushing another direction."}
+        if objective or candidates:
+            selected_objective = objective or candidates[0]
+            return {
+                "action": "follow_objective",
+                "reason": f"Use a bounded objective window to pursue {selected_objective['label']}.",
+                "objective_id": selected_objective.get("id"),
+            }
         if target_affordance:
             return {
                 "action": "follow_target",
                 "reason": f"Use local navigation to pursue {target_affordance['label']} based on the world-model ranking.",
+                "affordance_id": target_affordance.get("id"),
             }
         if _decision_flag(decision_state, "oak_intro_active"):
             return {"action": "press_a", "reason": "The intro script still appears active."}
-        if objective:
-            objective_label = objective.get("label", "the current objective")
-            return {"action": "follow_objective", "reason": f"Use local navigation to progress toward {objective_label}."}
         return {"action": "move_down", "reason": "Field exploration can probe one move at a time."}
     if mode == "battle":
         return {"action": "follow_interaction", "reason": "Battle interaction is active."}
@@ -261,93 +288,16 @@ def build_heuristic_hint(snapshot: dict[str, Any], decision_state: dict[str, Any
 
 
 def build_agent_prompt(context: dict[str, Any]) -> str:
-    observation = context["observation"]
-    allowed_ids = ", ".join(action["id"] for action in context["allowed_actions"])
-    event_lines = "\n".join(f"- {event}" for event in observation["events"]) or "- none"
-    trace_lines = "\n".join(
-        f"- kind={trace['kind']} after_mode={trace['after_mode']} passed={trace['passed']}"
-        for trace in context["recent_traces"]
-    ) or "- none"
-    menu_line = ", ".join(observation["menu"]["visible_items"]) or "none"
-    dialogue_line = " | ".join(observation["dialogue"]["visible_lines"]) or "none"
-    dialogue_context = observation["dialogue"].get("context") or {}
-    movement = observation.get("movement") or {}
-    navigation = observation.get("navigation") or {}
-    interaction = observation.get("interaction") or {}
-    naming = observation.get("naming") or {}
-    pokedex = observation.get("pokedex") or {}
-    battle = observation.get("battle") or {}
-    party = observation.get("party") or {}
-    inventory = observation.get("inventory") or {}
-    trainer = observation.get("trainer") or {}
-    selected_move = ((battle.get("move_menu") or {}).get("selected_move") or {}).get("name")
-    objective = navigation.get("objective")
-    target_affordance = navigation.get("target_affordance")
-    objective_line = "none"
-    if objective:
-        objective_line = f"{objective.get('kind')}: {objective.get('label')}"
-    target_line = "none"
-    if target_affordance:
-        target_line = f"{target_affordance.get('kind')}: {target_affordance.get('label')}"
-    affordance_lines = context["model_input"]["observation"]["navigation"].get("affordances") or []
-    affordance_summary = ", ".join(
-        f"{affordance['id']}={affordance['kind']}"
-        for affordance in affordance_lines[:8]
-    ) or "none"
-    ranked_affordances = navigation.get("ranked_affordances") or []
-    ranked_summary = ", ".join(
-        f"{affordance['id']}({affordance['score']})"
-        for affordance in ranked_affordances[:6]
-    ) or "none"
-    facing = movement.get("facing") or "unknown"
-    move_result = navigation.get("last_result", {}).get("kind") if navigation.get("last_result") else "none"
-    failures = navigation.get("consecutive_failures", 0)
-    map_name = observation["map"].get("name") or observation["map"].get("const_name") or f"Map {observation['map']['id']}"
-    target_reason = navigation.get("target_reason") or "none"
-    recommended_preset_name = _recommended_preset_name(observation, context["decision_state"])
-    preset_name_line = "none"
-    if recommended_preset_name:
-        preset_name_line = recommended_preset_name
-    party_summary = _summarize_party(party)
-    inventory_summary = _summarize_inventory(inventory)
-    money_summary = _summarize_money_and_badges(trainer)
-
     return (
-        "You are choosing the next action for Pokemon Blue.\n"
-        f"Current mode: {observation['mode']}\n"
-        f"Interaction type: {interaction.get('type')}\n"
-        f"Map: {map_name} (id={observation['map']['id']}) x={observation['map']['x']} y={observation['map']['y']}\n"
-        f"Facing: {facing}\n"
-        f"Target affordance: {target_line}\n"
-        f"Target reason: {target_reason}\n"
-        f"Objective: {objective_line}\n"
-        f"Affordances: {affordance_summary}\n"
-        f"Ranked affordances: {ranked_summary}\n"
-        f"Last movement result: {move_result}; consecutive failures: {failures}\n"
-        f"Dialogue: {dialogue_line}\n"
-        f"Dialogue visible: {dialogue_context.get('visible', False)}; "
-        f"prompt visible: {dialogue_context.get('prompt_visible', False)}; "
-        f"classification: {dialogue_context.get('classification', 'none')}\n"
-        f"Menu items: {menu_line}\n"
-        f"Selected menu item: {observation['menu']['selected_item_text']}\n"
-        f"Recommended preset menu choice: {preset_name_line}\n"
-        f"Naming screen: {naming.get('active', False)} type={naming.get('screen_type')} current='{naming.get('current_text')}' base='{naming.get('base_name')}'\n"
-        f"Pokedex screen: {pokedex.get('active', False)} species={pokedex.get('species_name')} class={pokedex.get('species_class')} info={' | '.join(pokedex.get('description_lines', []))}\n"
-        f"Party summary: {party_summary}\n"
-        f"Inventory summary: {inventory_summary}\n"
-        f"Trainer summary: {money_summary}\n"
-        f"Battle state: ui={battle.get('ui_state')} selected_command={battle.get('command_menu', {}).get('selected_command')} selected_move={selected_move}\n"
-        "Recent events:\n"
-        f"{event_lines}\n"
-        "Recent traces:\n"
-        f"{trace_lines}\n"
-        f"Heuristic next action: {context['heuristic_next_action']['action']} "
-        f"because {context['heuristic_next_action']['reason']}\n"
-        "Rules:\n"
-        + "\n".join(f"- {rule}" for rule in context["rules"])
-        + "\n"
-        f"Allowed actions: {allowed_ids}\n"
-        'Return JSON only: {"action":"...", "reason":"...", "affordance_id":"...optional..."}'
+        "Choose the next verified action for Pokemon Blue.\n"
+        "Use the structured turn input JSON as the source of truth for game state.\n"
+        "Do not restate the observation or narrate what you see.\n"
+        "Choose exactly one action from allowed_action_ids.\n"
+        "Prefer follow_interaction when the game is already in dialogue, battle, naming, or another non-field interaction.\n"
+        "In field mode, prefer follow_objective with an objective_id from candidate objectives before using direct movement.\n"
+        "Use follow_target only when you intentionally want a tactical override to a specific affordance.\n"
+        "Keep the reason short and grounded in the current turn input.\n"
+        'Return JSON only: {"action":"...", "reason":"...", "objective_id":"...optional...", "affordance_id":"...optional..."}'
     )
 
 
@@ -412,6 +362,19 @@ def _summarize_inventory(inventory: dict[str, Any], *, limit: int = 5) -> str:
     return f"{inventory.get('count', len(items))} items: {preview}"
 
 
+def _summarize_objectives(objectives: list[dict[str, Any]], *, limit: int = 4) -> str:
+    if not objectives:
+        return "none"
+    summary = ", ".join(
+        f"{objective.get('id')}({objective.get('confidence', '?')}): {objective.get('kind')}"
+        for objective in objectives[:limit]
+    )
+    remainder = len(objectives) - limit
+    if remainder > 0:
+        summary = f"{summary}, +{remainder} more"
+    return summary
+
+
 def _summarize_money_and_badges(trainer: dict[str, Any]) -> str:
     badge_names = [
         badge.get("name")
@@ -459,3 +422,209 @@ def build_dialogue_context(snapshot: dict[str, Any]) -> dict[str, Any]:
         "recommended_reason": recommended_reason,
         "text": dialogue_text,
     }
+
+
+def _build_mode_state(
+    snapshot: dict[str, Any],
+    *,
+    dialogue_context: dict[str, Any],
+    navigation: dict[str, Any],
+    candidate_objectives: list[dict[str, Any]],
+    decision_state: dict[str, Any],
+) -> dict[str, Any]:
+    mode = snapshot["mode"]
+    state = {
+        "map": _compact_map(snapshot["map"]),
+        "dialogue": _compact_dialogue(snapshot, dialogue_context),
+        "resources": _compact_resources(snapshot),
+    }
+    if mode == "field":
+        state["movement"] = {
+            "facing": (snapshot.get("movement") or {}).get("facing"),
+        }
+        state["field_navigation"] = {
+            "active_objective": _compact_objective(
+                (navigation.get("objective_state") or {}).get("active_objective")
+                or navigation.get("active_objective")
+                or navigation.get("objective")
+            ),
+            "candidate_objectives": [_compact_objective(objective) for objective in candidate_objectives[:4]],
+            "tactical_target": _compact_affordance(navigation.get("target_affordance"), include_score=True),
+            "ranked_affordances": [
+                _compact_affordance(affordance, include_score=True)
+                for affordance in (navigation.get("ranked_affordances") or [])[:6]
+            ],
+            "nearby_affordances": [
+                _compact_affordance(affordance)
+                for affordance in (navigation.get("affordances") or [])[:8]
+            ],
+            "progress_signals": (navigation.get("objective_state") or {}).get("progress_signals")
+            or navigation.get("progress_signals")
+            or [],
+            "loop_signals": (navigation.get("objective_state") or {}).get("loop_signals")
+            or navigation.get("loop_signals")
+            or [],
+            "last_movement_result": (navigation.get("last_result") or {}).get("kind"),
+            "consecutive_failures": navigation.get("consecutive_failures", 0),
+        }
+        return state
+
+    if mode in {"dialogue", "menu", "menu_dialogue", "naming"}:
+        state["menu"] = _compact_menu(snapshot["menu"])
+        recommended_preset_name = _recommended_preset_name(snapshot, decision_state)
+        if recommended_preset_name:
+            state["recommended_preset_choice"] = recommended_preset_name
+        if mode == "naming" or (snapshot.get("naming") or {}).get("active"):
+            state["naming"] = _compact_naming(snapshot.get("naming") or {})
+        return state
+
+    if mode == "battle":
+        state["battle"] = _compact_battle(snapshot.get("battle") or {})
+        state["menu"] = _compact_menu(snapshot["menu"])
+        return state
+
+    return state
+
+
+def _build_agent_memory(
+    world_state: dict[str, Any],
+    *,
+    objective_memory: dict[str, Any],
+    progress_signals: list[str],
+    loop_signals: list[str],
+) -> dict[str, Any]:
+    return {
+        "active_objective": _compact_objective(objective_memory.get("active_objective")),
+        "recent_map_history": [entry.get("map") for entry in world_state.get("recent_map_history", [])[-4:]],
+        "recent_progress": _compact_progress_entries(objective_memory.get("objective_progress") or []),
+        "recent_invalidations": _compact_invalidations(objective_memory.get("objective_invalidations") or []),
+        "progress_signals": progress_signals[:4],
+        "loop_signals": loop_signals[:4],
+    }
+
+
+def _compact_map(map_state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": map_state.get("id"),
+        "name": map_state.get("name") or map_state.get("const_name"),
+        "x": map_state.get("x"),
+        "y": map_state.get("y"),
+        "script": map_state.get("script"),
+    }
+
+
+def _compact_dialogue(snapshot: dict[str, Any], dialogue_context: dict[str, Any]) -> dict[str, Any]:
+    screen_rows = _non_empty_rows((snapshot.get("screen") or {}).get("decoded_rows") or [])
+    payload = {
+        "active": snapshot["dialogue"].get("active", False),
+        "visible_lines": (snapshot["dialogue"].get("visible_lines") or [])[:3],
+        "classification": dialogue_context.get("classification"),
+        "prompt_visible": dialogue_context.get("prompt_visible"),
+    }
+    if screen_rows:
+        payload["screen_rows"] = screen_rows[:4]
+    return payload
+
+
+def _compact_menu(menu: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "active": menu.get("active", False),
+        "visible_items": (menu.get("visible_items") or [])[:6],
+        "selected_item_text": menu.get("selected_item_text"),
+        "selected_index": menu.get("selected_index"),
+    }
+
+
+def _compact_naming(naming: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "active": naming.get("active", False),
+        "screen_type": naming.get("screen_type"),
+        "current_text": naming.get("current_text"),
+        "base_name": naming.get("base_name"),
+    }
+
+
+def _compact_battle(battle: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ui_state": battle.get("ui_state"),
+        "selected_command": (battle.get("command_menu") or {}).get("selected_command"),
+        "selected_move": ((battle.get("move_menu") or {}).get("selected_move") or {}).get("name"),
+    }
+
+
+def _compact_resources(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "party_summary": _summarize_party(snapshot.get("party") or {}),
+        "inventory_summary": _summarize_inventory(snapshot.get("inventory") or {}),
+        "trainer_summary": _summarize_money_and_badges(snapshot.get("trainer") or {}),
+    }
+
+
+def _compact_objective(objective: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not objective:
+        return None
+    payload = {
+        "id": objective.get("id"),
+        "kind": objective.get("kind"),
+        "phase": objective.get("phase"),
+        "label": objective.get("label"),
+        "confidence": objective.get("confidence"),
+        "target_affordance_ids": objective.get("target_affordance_ids") or [],
+        "evidence": (objective.get("evidence") or [])[:2],
+    }
+    return payload
+
+
+def _compact_affordance(affordance: dict[str, Any] | None, *, include_score: bool = False) -> dict[str, Any] | None:
+    if not affordance:
+        return None
+    payload = {
+        "id": affordance.get("id"),
+        "kind": affordance.get("kind"),
+        "label": affordance.get("label"),
+        "distance": affordance.get("distance"),
+        "reachable": (affordance.get("reachability") or {}).get("reachable"),
+        "path_length": (affordance.get("reachability") or {}).get("path_length"),
+        "interaction_class": affordance.get("interaction_class"),
+        "identity_hints": (affordance.get("identity_hints") or [])[:3],
+        "last_outcome": affordance.get("last_outcome"),
+    }
+    if include_score and affordance.get("score") is not None:
+        payload["score"] = affordance.get("score")
+    return payload
+
+
+def _compact_trace_summary(trace: dict[str, Any]) -> dict[str, Any]:
+    decision = trace.get("decision") or {}
+    return {
+        "kind": trace.get("kind"),
+        "action": decision.get("action") or (trace.get("payload") or {}).get("action"),
+        "after_mode": trace.get("after_mode"),
+        "passed": trace.get("passed"),
+    }
+
+
+def _compact_progress_entries(entries: list[dict[str, Any]], *, limit: int = 3) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": entry.get("id"),
+            "success": entry.get("success"),
+            "partial": entry.get("partial"),
+            "signals": (entry.get("progress_signals") or [])[:3],
+        }
+        for entry in entries[-limit:]
+    ]
+
+
+def _compact_invalidations(entries: list[dict[str, Any]], *, limit: int = 2) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": entry.get("id"),
+            "reason": entry.get("reason"),
+        }
+        for entry in entries[-limit:]
+    ]
+
+
+def _non_empty_rows(rows: list[str], *, limit: int = 6) -> list[str]:
+    return [row for row in rows if row.strip()][:limit]
