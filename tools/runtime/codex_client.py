@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections import deque
+from datetime import UTC, datetime
 import json
 from pathlib import Path
 import queue
+import re
 import subprocess
 from threading import Lock, Thread
 import time
@@ -12,6 +14,9 @@ from typing import Any, Callable
 
 class CodexAppServerError(RuntimeError):
     pass
+
+
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 def _runtime_tool_spec(
@@ -84,6 +89,7 @@ class CodexAppServerClient:
         model: str | None = None,
         reasoning_effort: str | None = None,
         tool_handler: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+        status_handler: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.cwd = cwd
         self.thread_state_path = thread_state_path
@@ -91,6 +97,7 @@ class CodexAppServerClient:
         self.requested_model = model
         self.requested_reasoning_effort = reasoning_effort
         self.tool_handler = tool_handler
+        self.status_handler = status_handler
         self.thread_id: str | None = None
         self.model: str | None = None
         self.model_provider: str | None = None
@@ -108,6 +115,8 @@ class CodexAppServerClient:
         self._next_id = 1
         self._id_lock = Lock()
         self._stderr_lines: deque[str] = deque(maxlen=50)
+        self._recent_events: deque[dict[str, Any]] = deque(maxlen=50)
+        self._pending_turn: dict[str, Any] | None = None
         self._stdout_thread: Thread | None = None
         self._stderr_thread: Thread | None = None
 
@@ -125,8 +134,17 @@ class CodexAppServerClient:
         if self._process is not None:
             return
 
+        command = ["codex", "app-server"]
+        if self.requested_reasoning_effort:
+            command.extend(
+                [
+                    "-c",
+                    f'model_reasoning_effort="{self.requested_reasoning_effort}"',
+                ]
+            )
+
         process = subprocess.Popen(
-            ["codex", "app-server"],
+            command,
             cwd=self.cwd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -240,6 +258,18 @@ class CodexAppServerClient:
                 ),
             }
         )
+        self._pending_turn = {
+            "phase": "requesting",
+            "requested_at": _timestamp(),
+            "thread_id": self._require_thread_id(),
+            "turn_id": None,
+            "observation_mode": context.get("observation", {}).get("mode"),
+            "allowed_action_count": len(context.get("allowed_actions") or []),
+            "requested_model": self.requested_model,
+            "requested_reasoning_effort": self.requested_reasoning_effort,
+            "operator_prompt_present": bool(operator_prompt),
+        }
+        self._emit_status("turn_requested", self._pending_turn)
         response = self.request(
             "turn/start",
             {
@@ -261,6 +291,13 @@ class CodexAppServerClient:
         turn_id = turn.get("id")
         if not turn_id:
             raise CodexAppServerError(f"Missing turn id in turn/start response: {response}")
+        self._pending_turn = {
+            **(self._pending_turn or {}),
+            "phase": "waiting",
+            "turn_id": turn_id,
+            "started_at": _timestamp(),
+        }
+        self._emit_status("turn_started", self._pending_turn)
         result = self._wait_for_turn(turn_id, timeout=timeout)
         tool_results = result.get("tool_results") or []
         decision: dict[str, str]
@@ -291,6 +328,14 @@ class CodexAppServerClient:
                 decision["affordance_id"] = tool_record["affordance_id"]
             if tool_record.get("objective_id"):
                 decision["objective_id"] = tool_record["objective_id"]
+        self._pending_turn = None
+        self._emit_status(
+            "turn_completed",
+            {
+                "turn_id": turn_id,
+                "thread_id": self._require_thread_id(),
+            },
+        )
         return {
             "decision": decision,
             "thread_id": self._require_thread_id(),
@@ -302,6 +347,7 @@ class CodexAppServerClient:
             "model_provider": self.model_provider,
             "reasoning_effort": self.reasoning_effort,
             "token_usage": self.token_usage,
+            "stderr_lines": list(self._stderr_lines),
         }
 
     def request(self, method: str, params: dict[str, Any] | None, *, timeout: float) -> dict[str, Any]:
@@ -348,6 +394,7 @@ class CodexAppServerClient:
                     {
                         "threadId": saved_thread_id,
                         "model": self.requested_model,
+                        "effort": self.requested_reasoning_effort,
                         "personality": "pragmatic",
                     },
                     timeout=15.0,
@@ -356,6 +403,15 @@ class CodexAppServerClient:
                 self.thread_id = thread.get("id") or saved_thread_id
                 self._apply_thread_settings(result)
                 self._save_thread_id(self.thread_id)
+                self._emit_status(
+                    "thread_ready",
+                    {
+                        "thread_id": self.thread_id,
+                        "model": self.model,
+                        "model_provider": self.model_provider,
+                        "reasoning_effort": self.reasoning_effort,
+                    },
+                )
                 return
             except CodexAppServerError:
                 self.thread_id = None
@@ -364,6 +420,7 @@ class CodexAppServerClient:
             "thread/start",
             {
                 "model": self.requested_model,
+                "effort": self.requested_reasoning_effort,
                 "cwd": str(self.cwd),
                 "approvalPolicy": "never",
                 "sandboxPolicy": {
@@ -381,6 +438,15 @@ class CodexAppServerClient:
         self.thread_id = thread_id
         self._apply_thread_settings(result)
         self._save_thread_id(thread_id)
+        self._emit_status(
+            "thread_ready",
+            {
+                "thread_id": self.thread_id,
+                "model": self.model,
+                "model_provider": self.model_provider,
+                "reasoning_effort": self.reasoning_effort,
+            },
+        )
 
     @classmethod
     def list_models(cls, *, cwd: Path) -> list[dict[str, Any]]:
@@ -418,11 +484,19 @@ class CodexAppServerClient:
             try:
                 message = self._events.get(timeout=remaining)
             except queue.Empty as exc:
-                raise CodexAppServerError(f"Timed out waiting for turn '{turn_id}' to complete") from exc
+                raise CodexAppServerError(self._format_turn_timeout(turn_id, event_log)) from exc
 
             method = message.get("method")
             params = message.get("params") or {}
-            event_log.append(self._summarize_event(message))
+            event_summary = self._summarize_event(message)
+            event_log.append(event_summary)
+            self._recent_events.append(event_summary)
+            if self._pending_turn and self._pending_turn.get("turn_id") == turn_id:
+                self._pending_turn = {
+                    **self._pending_turn,
+                    "last_event": event_summary,
+                    "event_count": len(event_log),
+                }
 
             if method == "item/agentMessage/delta":
                 item_id = params.get("itemId")
@@ -472,7 +546,7 @@ class CodexAppServerClient:
                     "tool_results": tool_results,
                 }
 
-        raise CodexAppServerError(f"Timed out waiting for turn '{turn_id}'")
+        raise CodexAppServerError(self._format_turn_timeout(turn_id, event_log))
 
     def _agent_text_from_turn(self, turn: dict[str, Any], agent_text_by_item: dict[str, str]) -> str | None:
         for item in turn.get("items") or []:
@@ -520,6 +594,20 @@ class CodexAppServerClient:
         self.model = payload.get("model") or self.model
         self.model_provider = payload.get("modelProvider") or self.model_provider
         self.reasoning_effort = payload.get("reasoningEffort") or self.reasoning_effort
+
+    def debug_snapshot(self) -> dict[str, Any]:
+        return {
+            "thread_id": self.thread_id,
+            "model": self.model,
+            "model_provider": self.model_provider,
+            "reasoning_effort": self.reasoning_effort,
+            "requested_model": self.requested_model,
+            "requested_reasoning_effort": self.requested_reasoning_effort,
+            "pending_turn": dict(self._pending_turn) if self._pending_turn else None,
+            "recent_events": list(self._recent_events),
+            "stderr_lines": list(self._stderr_lines),
+            "token_usage": self.token_usage,
+        }
 
     def _apply_token_usage(self, payload: dict[str, Any] | None) -> None:
         payload = payload or {}
@@ -618,17 +706,19 @@ class CodexAppServerClient:
                 continue
 
             if request_id is not None and has_method:
+                self._recent_events.append(self._summarize_event(message))
                 self._respond_to_server_request(message)
                 continue
 
             if has_method:
+                self._recent_events.append(self._summarize_event(message))
                 self._events.put(message)
 
     def _read_stderr(self) -> None:
         assert self._process is not None
         assert self._process.stderr is not None
         for raw_line in self._process.stderr:
-            line = raw_line.strip()
+            line = _strip_ansi(raw_line).strip()
             if line:
                 self._stderr_lines.append(line)
 
@@ -779,3 +869,29 @@ class CodexAppServerClient:
         if not self.thread_id:
             raise CodexAppServerError("No active Codex thread")
         return self.thread_id
+
+    def _format_turn_timeout(self, turn_id: str, event_log: list[dict[str, Any]]) -> str:
+        details = {
+            "thread_id": self.thread_id,
+            "requested_model": self.requested_model,
+            "requested_reasoning_effort": self.requested_reasoning_effort,
+            "resolved_model": self.model,
+            "resolved_reasoning_effort": self.reasoning_effort,
+            "pending_turn": self._pending_turn,
+            "recent_events": event_log[-12:] or list(self._recent_events)[-12:],
+            "recent_stderr": list(self._stderr_lines),
+        }
+        return f"Timed out waiting for turn '{turn_id}' to complete: {json.dumps(details, ensure_ascii=True)}"
+
+    def _emit_status(self, event: str, payload: dict[str, Any]) -> None:
+        if self.status_handler is None:
+            return
+        self.status_handler(event, payload)
+
+
+def _timestamp() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", text)

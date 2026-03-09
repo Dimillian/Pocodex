@@ -152,7 +152,9 @@ overrides can include `affordance_id`.
 including whether it is running, the current Codex thread/turn ids, the last
 decision, the last execution result, whether it started from a fresh Codex
 thread, current model/provider/reasoning-effort metadata, latest token usage
-and context-window telemetry reported by app-server, queued web-UI prompt
+and context-window telemetry reported by app-server, pending-turn diagnostics
+(including requested model/effort before the first step completes), recent
+app-server stderr/event context for failed turns, queued web-UI prompt
 overrides, and recent controller logs.
 
 `GET /agent/models` returns the current app-server model catalog used by the

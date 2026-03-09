@@ -424,15 +424,34 @@ function formatElapsedSeconds(seconds) {
   return `${minutes}m ${remainder}s`;
 }
 
+function getPendingTurnInfo(agentStatus) {
+  const pendingTurn = agentStatus.pending_turn;
+  if (!pendingTurn) {
+    return null;
+  }
+  const startedAt = pendingTurn.started_at || pendingTurn.requested_at || agentStatus.decision_started_at;
+  const elapsedSeconds = agentElapsedSeconds(startedAt);
+  return {
+    ...pendingTurn,
+    elapsedSeconds,
+    elapsedLabel: formatElapsedSeconds(elapsedSeconds),
+  };
+}
+
 function getAgentStartupInfo(agentStatus) {
   if (!agentStatus.running || agentStatus.current_action || (agentStatus.step_count ?? 0) > 0) {
     return null;
   }
+  const pendingTurn = getPendingTurnInfo(agentStatus);
   const elapsedSeconds = agentElapsedSeconds(agentStatus.started_at);
   let phase = "Starting";
   if (agentStatus.mode === "codex") {
     if (!agentStatus.thread_id) {
       phase = "Starting Codex";
+    } else if (pendingTurn?.phase === "requesting") {
+      phase = "Requesting first turn";
+    } else if (pendingTurn?.phase === "waiting") {
+      phase = "Waiting for first turn";
     } else if (agentStatus.fresh_thread) {
       phase = "First turn on fresh thread";
     } else {
@@ -475,11 +494,17 @@ function formatAgentSessionBlock(agentStatus) {
   const lastUsage = agentStatus.token_usage?.last;
   const contextWindow = agentStatus.token_usage?.model_context_window;
   const startup = getAgentStartupInfo(agentStatus);
+  const pendingTurn = getPendingTurnInfo(agentStatus);
+  const lastEvent = pendingTurn?.last_event;
   return [
     `Thread        ${shortId(agentStatus.thread_id, 12)}`,
     `Turn          ${shortId(agentStatus.turn_id, 12)}`,
     `Fresh thread  ${agentStatus.fresh_thread ? "yes" : "no"}`,
     startup ? `Startup       ${startup.phase} (${startup.elapsedLabel})` : null,
+    pendingTurn ? `Pending turn  ${pendingTurn.phase ?? "unknown"} (${pendingTurn.elapsedLabel})` : null,
+    pendingTurn?.requested_model ? `Req model     ${pendingTurn.requested_model}` : null,
+    pendingTurn?.requested_reasoning_effort ? `Req effort    ${pendingTurn.requested_reasoning_effort}` : null,
+    lastEvent?.method ? `Last event    ${lastEvent.method}` : null,
     "",
     `Context win   ${formatInteger(contextWindow, "unknown")}`,
     `Prompt load   ${formatContextUsage(agentStatus.token_usage)}`,
@@ -843,6 +868,8 @@ function formatDecisionBlock(agentContext, agentStatus) {
   const navigation = observation.navigation || {};
   const objectiveState = agentContext.objective_state || {};
   const startup = getAgentStartupInfo(agentStatus);
+  const pendingTurn = getPendingTurnInfo(agentStatus);
+  const errorContext = agentStatus.last_error_context || {};
   return [
     `agent state     ${agentStatus.state}`,
     `mode            ${agentStatus.mode ?? "none"}`,
@@ -853,6 +880,8 @@ function formatDecisionBlock(agentContext, agentStatus) {
     `steps           ${agentStatus.step_count}`,
     `thread          ${agentStatus.thread_id ?? "none"}`,
     startup ? `startup         ${startup.phase} (${startup.elapsedLabel})` : null,
+    pendingTurn ? `pending turn    ${pendingTurn.phase ?? "unknown"} (${pendingTurn.elapsedLabel})` : null,
+    pendingTurn?.turn_id ? `pending id      ${pendingTurn.turn_id}` : null,
     `objective       ${objectiveState.active_objective?.label ?? "none"}`,
     "",
     `last action     ${decision.action ?? "none"}`,
@@ -869,6 +898,7 @@ function formatDecisionBlock(agentContext, agentStatus) {
     `queued prompt   ${formatPreview(agentStatus.pending_prompt)}`,
     agentStatus.last_error ? "" : null,
     agentStatus.last_error ? `error           ${agentStatus.last_error}` : null,
+    errorContext.pending_turn?.phase ? `error pending   ${errorContext.pending_turn.phase}` : null,
   ].filter(Boolean).join("\n");
 }
 
@@ -1032,6 +1062,7 @@ function renderAgentPanel(agentStatus) {
   const startup = getAgentStartupInfo(agentStatus);
   const displayedModel = getDisplayedAgentModel(agentStatus);
   const displayedReasoning = getDisplayedAgentReasoning(agentStatus);
+  const pendingTurn = getPendingTurnInfo(agentStatus);
 
   agentStatStateEl.textContent = agentStatus.state ?? "idle";
   agentStatStateCaptionEl.textContent = describeAgentState(agentStatus);
@@ -1047,6 +1078,10 @@ function renderAgentPanel(agentStatus) {
   agentStatThreadEl.textContent = shortId(agentStatus.thread_id);
   if (agentStatus.turn_id) {
     agentStatThreadCaptionEl.textContent = `Turn ${shortId(agentStatus.turn_id)}`;
+  } else if (pendingTurn?.phase === "requesting") {
+    agentStatThreadCaptionEl.textContent = `Requesting turn • ${pendingTurn.elapsedLabel}`;
+  } else if (pendingTurn?.turn_id) {
+    agentStatThreadCaptionEl.textContent = `Turn ${shortId(pendingTurn.turn_id)} • ${pendingTurn.elapsedLabel}`;
   } else if (startup) {
     agentStatThreadCaptionEl.textContent = `First action pending • ${startup.elapsedLabel}`;
   } else {

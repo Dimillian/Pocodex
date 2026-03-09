@@ -69,6 +69,11 @@ class AgentController:
                 "total": None,
                 "model_context_window": None,
             },
+            "decision_started_at": None,
+            "pending_turn": None,
+            "last_codex_events": [],
+            "last_codex_stderr": [],
+            "last_error_context": None,
             "pending_prompt": None,
             "last_consumed_prompt": None,
             "last_consumed_prompt_at": None,
@@ -125,6 +130,11 @@ class AgentController:
                         "total": None,
                         "model_context_window": None,
                     },
+                    "decision_started_at": None,
+                    "pending_turn": None,
+                    "last_codex_events": [],
+                    "last_codex_stderr": [],
+                    "last_error_context": None,
                     "started_at": _timestamp(),
                     "updated_at": _timestamp(),
                 }
@@ -228,6 +238,7 @@ class AgentController:
                     model=model,
                     reasoning_effort=reasoning_effort,
                     tool_handler=self._handle_codex_tool_call,
+                    status_handler=self._handle_codex_client_status,
                 )
                 codex_client.start()
                 self._update_status(
@@ -255,6 +266,16 @@ class AgentController:
 
                 context = self.session.agent_context()
                 operator_prompt = self._pending_prompt() if mode == "codex" else None
+                if mode == "codex":
+                    self._update_status(
+                        state="deciding",
+                        current_action=None,
+                        turn_id=None,
+                        decision_started_at=_timestamp(),
+                        pending_turn=None,
+                        last_error=None,
+                        last_error_context=None,
+                    )
                 decision, codex_meta = self._decide_action(
                     context,
                     mode=mode,
@@ -276,6 +297,10 @@ class AgentController:
                     model_provider=codex_meta.get("model_provider"),
                     reasoning_effort=codex_meta.get("reasoning_effort"),
                     token_usage=codex_meta.get("token_usage"),
+                    decision_started_at=None,
+                    pending_turn=None,
+                    last_codex_events=codex_meta.get("events") or [],
+                    last_codex_stderr=codex_meta.get("stderr_lines") or [],
                 )
                 tool_result = codex_meta.get("tool_result")
                 if mode == "codex" and tool_result and tool_result.get("success"):
@@ -338,6 +363,7 @@ class AgentController:
                     current_action=None,
                     last_result=result_summary,
                     last_error=None,
+                    last_error_context=None,
                 )
                 self._append_log(
                     {
@@ -353,17 +379,24 @@ class AgentController:
                 if self._stop_event.wait(step_delay_ms / 1000):
                     break
         except Exception as exc:
+            debug_snapshot = codex_client.debug_snapshot() if codex_client is not None else None
             self._update_status(
                 running=False,
                 state="error",
                 current_action=None,
                 last_error=str(exc),
+                last_error_context=debug_snapshot,
+                pending_turn=debug_snapshot.get("pending_turn") if debug_snapshot else None,
+                last_codex_events=debug_snapshot.get("recent_events") if debug_snapshot else [],
+                last_codex_stderr=debug_snapshot.get("stderr_lines") if debug_snapshot else [],
+                decision_started_at=None,
             )
             self._append_log(
                 {
                     "timestamp": _timestamp(),
                     "kind": "agent_controller_error",
                     "message": str(exc),
+                    "context": debug_snapshot,
                 }
             )
         finally:
@@ -374,6 +407,8 @@ class AgentController:
                     self._status["running"] = False
                     self._status["state"] = "stopped" if self._stop_event.is_set() else "idle"
                     self._status["current_action"] = None
+                    self._status["decision_started_at"] = None
+                    self._status["pending_turn"] = None
                     self._status["updated_at"] = _timestamp()
 
     def _decide_action(
@@ -415,6 +450,7 @@ class AgentController:
             "model_provider": result.get("model_provider"),
             "reasoning_effort": result.get("reasoning_effort"),
             "token_usage": result.get("token_usage"),
+            "stderr_lines": result.get("stderr_lines"),
         }
 
     def _update_status(self, **changes: Any) -> None:
@@ -454,6 +490,31 @@ class AgentController:
                 "preview": prompt[:240],
             }
         )
+
+    def _handle_codex_client_status(self, event: str, payload: dict[str, Any]) -> None:
+        if event == "thread_ready":
+            self._update_status(
+                thread_id=payload.get("thread_id"),
+                model=payload.get("model"),
+                model_provider=payload.get("model_provider"),
+                reasoning_effort=payload.get("reasoning_effort"),
+            )
+            return
+        if event == "turn_requested":
+            self._update_status(
+                state="deciding",
+                current_action=None,
+                turn_id=None,
+                decision_started_at=payload.get("requested_at"),
+                pending_turn=payload,
+            )
+            return
+        if event == "turn_started":
+            self._update_status(
+                state="deciding",
+                turn_id=payload.get("turn_id"),
+                pending_turn=payload,
+            )
 
     def _handle_codex_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         reason = arguments.get("reason")
